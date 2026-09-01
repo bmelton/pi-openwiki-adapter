@@ -1,6 +1,6 @@
 {
   "name": "pi-openwiki-adapter",
-  "version": "0.2.0-beta.0",
+  "version": "0.3.1",
   "description": "Pi package that exposes generated OpenWiki docs as token-efficient codebase navigation tools.",
   "license": "MIT",
   "author": "bmelton",
