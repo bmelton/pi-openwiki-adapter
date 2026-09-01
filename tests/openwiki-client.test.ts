@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.js";
-import { OpenWikiClient, mcpResultToText } from "../src/openwiki-client.js";
+import { OpenWikiClient } from "../src/openwiki-client.js";
 import type { ResolvedOpenWikiConfig } from "../src/types.js";
 
 function config(command: string, cwd: string): ResolvedOpenWikiConfig {
@@ -40,16 +40,6 @@ describe("OpenWikiClient", () => {
 
     expect(result.text).toBe("initialized");
     expect(readArgs(argsFile)).toEqual(["--init", "--print"]);
-  });
-});
-
-describe("mcpResultToText", () => {
-  it("extracts text content", () => {
-    expect(mcpResultToText({ content: [{ type: "text", text: "hello" }] })).toBe("hello");
-  });
-
-  it("serializes unknown content", () => {
-    expect(mcpResultToText({ value: 1 })).toContain('"value"');
   });
 });
 

@@ -11,25 +11,13 @@ export const DEFAULT_CONFIG: ResolvedOpenWikiConfig = {
     args: [],
     cwd: ".",
     timeoutMs: 30 * 60_000,
-    toolMap: {
-      status: "openwiki_status",
-      outline: "openwiki_outline",
-      search: "openwiki_search",
-      read: "openwiki_read",
-      update: "openwiki_update",
-    },
   },
   tools: {
     autoEnableForCodeLookup: true,
-    explicitEnabled: false,
-    explicitDisabled: false,
   },
   freshness: {
     managedBy: "unknown",
-    nudge: "significant-drift",
-    autoUpdate: false,
-    lastPromptedAt: "",
-    lastDismissedAt: "",
+    nudge: true,
     significantFileThreshold: 10,
   },
   tokenBudget: {
@@ -39,20 +27,6 @@ export const DEFAULT_CONFIG: ResolvedOpenWikiConfig = {
     maxResults: 8,
   },
 };
-
-function deepMerge<T>(base: T, override: unknown): T {
-  if (!override || typeof override !== "object" || Array.isArray(override)) return base;
-  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
-  for (const [key, value] of Object.entries(override)) {
-    const existing = out[key];
-    if (existing && typeof existing === "object" && !Array.isArray(existing) && value && typeof value === "object" && !Array.isArray(value)) {
-      out[key] = deepMerge(existing, value);
-    } else if (value !== undefined) {
-      out[key] = value;
-    }
-  }
-  return out as T;
-}
 
 function readJson(path: string): OpenWikiConfig | undefined {
   if (!existsSync(path)) return undefined;
@@ -67,13 +41,23 @@ export function globalConfigPath(): string {
   return join(homedir(), CONFIG_DIR_NAME, "agent", "openwiki.json");
 }
 
+/** The generated OpenWiki Markdown directory. Single source of truth for readers and drift checks. */
+export function wikiDir(cwd: string): string {
+  return join(cwd, "openwiki");
+}
+
 export function resolveConfig(cwd: string): { config: ResolvedOpenWikiConfig; paths: { project: string; global: string } } {
   const globalPath = globalConfigPath();
   const projectPath = projectConfigPath(cwd);
-  let config = DEFAULT_CONFIG;
-  config = deepMerge(config, readJson(globalPath));
-  config = deepMerge(config, readJson(projectPath));
-  config.openwiki.cwd = resolve(cwd, config.openwiki.cwd || ".");
+  const merged = [readJson(globalPath), readJson(projectPath)].reduce<ResolvedOpenWikiConfig>((acc, override) => override ? {
+    ...acc,
+    ...override,
+    openwiki: { ...acc.openwiki, ...override.openwiki },
+    tools: { ...acc.tools, ...override.tools },
+    freshness: { ...acc.freshness, ...override.freshness },
+    tokenBudget: { ...acc.tokenBudget, ...override.tokenBudget },
+  } : acc, DEFAULT_CONFIG);
+  const config = { ...merged, openwiki: { ...merged.openwiki, cwd: resolve(cwd, merged.openwiki.cwd || ".") } };
   return { config, paths: { project: projectPath, global: globalPath } };
 }
 

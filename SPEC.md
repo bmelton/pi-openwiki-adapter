@@ -114,20 +114,17 @@ type OpenWikiConfig = {
     command?: string;
     args?: string[];
     cwd?: string;
+    timeoutMs?: number;
   };
 
   tools?: {
     autoEnableForCodeLookup?: boolean;
-    explicitEnabled?: boolean;
-    explicitDisabled?: boolean;
   };
 
   freshness?: {
-    managedBy?: "manual" | "git-hooks" | "ci-committed" | "ci-remote" | "ci-check-only" | "unknown" | "none";
-    nudge?: "off" | "missing-only" | "significant-drift" | "any-drift";
-    autoUpdate?: false;
-    lastPromptedAt?: string;
-    lastDismissedAt?: string;
+    /** Free-form label, reported by doctor/status. Never branched on. */
+    managedBy?: string;
+    nudge?: boolean;
     significantFileThreshold?: number;
   };
 
@@ -145,8 +142,7 @@ type OpenWikiConfig = {
 - [ ] `enabled`: `true`
 - [ ] `tools.autoEnableForCodeLookup`: `true`
 - [ ] `freshness.managedBy`: `unknown`
-- [ ] `freshness.nudge`: `significant-drift`
-- [ ] `freshness.autoUpdate`: `false`
+- [ ] `freshness.nudge`: `true`
 - [ ] `freshness.significantFileThreshold`: `10`
 - [ ] Conservative character budgets for tool output
 
@@ -333,21 +329,12 @@ Use available signals without requiring OpenWiki internals where possible:
 
 ### Policies
 
-- [ ] `off`: never nudge about drift.
-- [ ] `missing-only`: only mention missing OpenWiki/index.
-- [ ] `significant-drift`: mention meaningful drift only.
-- [ ] `any-drift`: mention any detected drift.
+- [ ] `nudge: true`: mention drift at session start when a stale reason is detected.
+- [ ] `nudge: false`: stay quiet at session start. `/openwiki doctor` still reports drift on request.
 
-### CI/External Freshness Modes
-
-If user says freshness is handled externally:
-
-- [ ] `ci-committed`: assume local index is updated when repo is pulled; default nudge should be `missing-only` or `significant-drift`.
-- [ ] `ci-remote`: verify local tool can read remote/current wiki before suppressing drift nudges.
-- [ ] `ci-check-only`: do not assume local OpenWiki is fresh; keep `significant-drift` default.
-- [ ] `git-hooks`: expect local updates, but still warn if index is missing or obviously stale.
-- [ ] `manual`: default to `significant-drift`.
-- [ ] `none` or `off`: avoid freshness nudges unless user runs doctor/status.
+Updates are never automatic under any policy. `managedBy` records how the user
+keeps the wiki fresh (manual, git-hooks, CI) and is reported back to them; it does
+not change behavior.
 
 ## Capability Gating
 

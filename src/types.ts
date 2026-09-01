@@ -1,57 +1,34 @@
-export type FreshnessManagedBy =
-  | "manual"
-  | "git-hooks"
-  | "ci-committed"
-  | "ci-remote"
-  | "ci-check-only"
-  | "unknown"
-  | "none";
-
-export type FreshnessNudge = "off" | "missing-only" | "significant-drift" | "any-drift";
-
-export type McpToolMap = {
-  status?: string;
-  outline?: string;
-  search?: string;
-  read?: string;
-  update?: string;
+export type ResolvedOpenWikiConfig = {
+  enabled: boolean;
+  openwiki: {
+    command: string;
+    args: string[];
+    cwd: string;
+    timeoutMs: number;
+  };
+  tools: {
+    autoEnableForCodeLookup: boolean;
+  };
+  freshness: {
+    /** Free-form label for how the wiki is refreshed. Reported, never branched on. */
+    managedBy: string;
+    nudge: boolean;
+    significantFileThreshold: number;
+  };
+  tokenBudget: {
+    outlineChars: number;
+    searchResultChars: number;
+    pageChars: number;
+    maxResults: number;
+  };
 };
 
 export type OpenWikiConfig = {
   enabled?: boolean;
-  openwiki?: {
-    command?: string;
-    args?: string[];
-    cwd?: string;
-    timeoutMs?: number;
-    toolMap?: McpToolMap;
-  };
-  tools?: {
-    autoEnableForCodeLookup?: boolean;
-    explicitEnabled?: boolean;
-    explicitDisabled?: boolean;
-  };
-  freshness?: {
-    managedBy?: FreshnessManagedBy;
-    nudge?: FreshnessNudge;
-    autoUpdate?: false;
-    lastPromptedAt?: string;
-    lastDismissedAt?: string;
-    significantFileThreshold?: number;
-  };
-  tokenBudget?: {
-    outlineChars?: number;
-    searchResultChars?: number;
-    pageChars?: number;
-    maxResults?: number;
-  };
-};
-
-export type ResolvedOpenWikiConfig = Required<Omit<OpenWikiConfig, "openwiki" | "tools" | "freshness" | "tokenBudget">> & {
-  openwiki: Required<Omit<NonNullable<OpenWikiConfig["openwiki"]>, "toolMap">> & { toolMap: Required<McpToolMap> };
-  tools: Required<NonNullable<OpenWikiConfig["tools"]>>;
-  freshness: Required<NonNullable<OpenWikiConfig["freshness"]>>;
-  tokenBudget: Required<NonNullable<OpenWikiConfig["tokenBudget"]>>;
+  openwiki?: Partial<ResolvedOpenWikiConfig["openwiki"]>;
+  tools?: Partial<ResolvedOpenWikiConfig["tools"]>;
+  freshness?: Partial<ResolvedOpenWikiConfig["freshness"]>;
+  tokenBudget?: Partial<ResolvedOpenWikiConfig["tokenBudget"]>;
 };
 
 export type DriftSummary = {
@@ -64,5 +41,4 @@ export type DriftSummary = {
   latestCommitTime?: string;
   indexMtime?: string;
   staleBecause: string[];
-  significant: boolean;
 };

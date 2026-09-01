@@ -1,4 +1,4 @@
-# pi-openwiki
+# pi-openwiki-adapter
 
 Pi package exposing generated OpenWiki documentation to Pi Coding Agent as token-efficient codebase navigation tools.
 
@@ -20,7 +20,10 @@ openwiki --init
 ## Install this Pi package
 
 ```bash
-pi install /path/to/pi-openwiki
+pi install npm:pi-openwiki-adapter
+
+# or, from a local checkout
+pi install /path/to/pi-openwiki-adapter
 ```
 
 ## Tools
@@ -49,14 +52,24 @@ Project config lives at `.pi/openwiki.json`.
 
 ```json
 {
+  "enabled": true,
   "openwiki": {
     "command": "openwiki",
     "cwd": ".",
     "timeoutMs": 1800000
+  },
+  "freshness": {
+    "managedBy": "manual",
+    "nudge": true,
+    "significantFileThreshold": 10
   }
 }
 ```
 
+A global config at `~/.pi/agent/openwiki.json` uses the same shape. Project values win.
+
 ## Freshness
 
-Freshness nudges are advisory. The package checks the local `openwiki/` directory plus git drift signals. It never updates OpenWiki automatically.
+Freshness nudges are advisory. The package reads the local `openwiki/` directory plus git drift signals. It never updates OpenWiki automatically.
+
+Set `freshness.nudge` to `false` to silence the session-start notice. `/openwiki doctor` still reports drift.

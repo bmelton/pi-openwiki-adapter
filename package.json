@@ -1,13 +1,37 @@
 {
-  "name": "pi-openwiki",
-  "version": "0.1.0",
-  "description": "Pi package that exposes LangChain OpenWiki via MCP for token-efficient codebase navigation.",
+  "name": "pi-openwiki-adapter",
+  "version": "0.2.0-beta.0",
+  "description": "Pi package that exposes generated OpenWiki docs as token-efficient codebase navigation tools.",
   "license": "MIT",
+  "author": "bmelton",
+  "homepage": "https://github.com/bmelton/pi-openwiki-adapter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bmelton/pi-openwiki-adapter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bmelton/pi-openwiki-adapter/issues"
+  },
   "type": "module",
-  "keywords": ["pi-package", "openwiki", "langchain", "mcp", "codebase-navigation"],
+  "keywords": [
+    "pi-package",
+    "openwiki",
+    "langchain",
+    "codebase-navigation"
+  ],
+  "files": [
+    "extensions",
+    "skills",
+    "src",
+    "README.md"
+  ],
   "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"]
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "scripts": {
     "test": "vitest run",

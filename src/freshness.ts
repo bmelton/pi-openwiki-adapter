@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { wikiDir } from "./config.js";
 import type { DriftSummary, ResolvedOpenWikiConfig } from "./types.js";
 
 const IMPORTANT_PATTERNS = [
@@ -24,18 +24,9 @@ function git(cwd: string, args: string[]): string | undefined {
   }
 }
 
-export function detectIndexPath(cwd: string): string | undefined {
-  const candidates = [
-    join(cwd, ".openwiki"),
-    join(cwd, "openwiki"),
-    join(cwd, "docs", "openwiki"),
-    join(cwd, ".wiki"),
-  ];
-  return candidates.find(existsSync);
-}
-
 export function computeDrift(cwd: string, config: ResolvedOpenWikiConfig): DriftSummary {
-  const indexPath = detectIndexPath(cwd);
+  const dir = wikiDir(cwd);
+  const indexPath = existsSync(dir) ? dir : undefined;
   const changed = git(cwd, ["status", "--porcelain", "--untracked-files=no"])
     ?.split("\n")
     .map((line) => line.slice(3).trim())
@@ -43,12 +34,12 @@ export function computeDrift(cwd: string, config: ResolvedOpenWikiConfig): Drift
   const latestCommit = git(cwd, ["rev-parse", "HEAD"]);
   const latestCommitUnix = git(cwd, ["log", "-1", "--format=%ct"]);
   const latestCommitTime = latestCommitUnix ? new Date(Number(latestCommitUnix) * 1000).toISOString() : undefined;
-  const indexMtime = indexPath ? statSync(indexPath).mtime.toISOString() : undefined;
+  const indexMtimeMs = indexPath ? statSync(indexPath).mtimeMs : undefined;
   const staleBecause: string[] = [];
 
-  if (!indexPath) staleBecause.push("No local OpenWiki index was found in common locations.");
-  if (indexMtime && latestCommitUnix && statSync(indexPath!).mtimeMs < Number(latestCommitUnix) * 1000) {
-    staleBecause.push("The detected OpenWiki index is older than the latest git commit.");
+  if (!indexPath) staleBecause.push("No local OpenWiki index was found at openwiki/.");
+  if (indexMtimeMs && latestCommitUnix && indexMtimeMs < Number(latestCommitUnix) * 1000) {
+    staleBecause.push("The OpenWiki index is older than the latest git commit.");
   }
 
   const importantChangedFiles = changed.filter((file) => IMPORTANT_PATTERNS.some((pattern) => pattern.test(file)));
@@ -67,24 +58,18 @@ export function computeDrift(cwd: string, config: ResolvedOpenWikiConfig): Drift
     importantChangedFiles,
     latestCommit,
     latestCommitTime,
-    indexMtime,
+    indexMtime: indexMtimeMs ? new Date(indexMtimeMs).toISOString() : undefined,
     staleBecause,
-    significant: staleBecause.length > 0 && (!indexPath || changed.length >= config.freshness.significantFileThreshold || importantChangedFiles.length > 0 || Boolean(indexMtime && latestCommitUnix)),
   };
 }
 
 export function shouldNudge(drift: DriftSummary, config: ResolvedOpenWikiConfig): boolean {
-  switch (config.freshness.nudge) {
-    case "off": return false;
-    case "missing-only": return !drift.indexExists;
-    case "any-drift": return !drift.indexExists || drift.staleBecause.length > 0 || drift.changedFileCount > 0;
-    case "significant-drift": return !drift.indexExists || drift.significant;
-  }
+  return config.freshness.nudge && drift.staleBecause.length > 0;
 }
 
 export function formatUpdateSuggestion(drift: DriftSummary, config: ResolvedOpenWikiConfig): string {
   const lines = [
-    `OpenWiki freshness policy: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}, autoUpdate=false`,
+    `OpenWiki freshness policy: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}`,
     `Index: ${drift.indexExists ? `found at ${drift.indexPath}` : "missing"}`,
   ];
   if (drift.indexMtime) lines.push(`Index modified: ${drift.indexMtime}`);

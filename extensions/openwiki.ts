@@ -21,7 +21,7 @@ export default function (pi: ExtensionAPI) {
 
   const getRuntime = (cwd: string) => {
     const { config, paths } = resolveConfig(cwd);
-    return { config, paths, client: new OpenWikiClient(config), drift: computeDrift(cwd, config) };
+    return { config, paths, client: new OpenWikiClient(config) };
   };
 
   pi.registerTool({
@@ -32,7 +32,8 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
       requireCodeLookup();
-      const { config, paths, client, drift } = getRuntime(ctx.cwd);
+      const { config, paths, client } = getRuntime(ctx.cwd);
+      const drift = computeDrift(ctx.cwd, config);
       const detected = await client.detectOpenWiki(signal);
       return textResult([
         `OpenWiki enabled: ${config.enabled}`,
@@ -42,7 +43,7 @@ export default function (pi: ExtensionAPI) {
         `Project config: ${paths.project}`,
         `Global config: ${paths.global}`,
         `Index: ${drift.indexExists ? `found at ${drift.indexPath}` : "missing"}`,
-        `Freshness: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}, autoUpdate=false`,
+        `Freshness: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}`,
         `Changed files: ${drift.changedFileCount}`,
         drift.staleBecause.length ? `Drift:\n${drift.staleBecause.map((x) => `- ${x}`).join("\n")}` : "Drift: no significant drift detected",
       ].filter(Boolean).join("\n"), { detected, drift, configPath: paths.project });
@@ -56,11 +57,11 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Get a compact OpenWiki codebase table of contents.",
     promptGuidelines: ["Use openwiki_outline first for broad codebase orientation, architecture questions, locating relevant files, or planning code changes."],
     parameters: Type.Object({ focus: Type.Optional(Type.String()), budget: Type.Optional(Type.Number()) }),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       requireCodeLookup();
       const { config, client } = getRuntime(ctx.cwd);
       const budget = Math.min(params.budget ?? config.tokenBudget.outlineChars, config.tokenBudget.outlineChars);
-      const result = await client.getOutline({ focus: params.focus, budget }, signal);
+      const result = await client.getOutline({ focus: params.focus });
       const truncated = truncateText(result.text, budget);
       return textResult(truncated.text, { raw: result.raw, truncated: truncated.truncated });
     },
@@ -72,12 +73,12 @@ export default function (pi: ExtensionAPI) {
     description: "Search OpenWiki for relevant pages, sections, files, or modules and return compact ranked results with identifiers.",
     promptSnippet: "Search OpenWiki pages/sections/files before broad file reads.",
     parameters: Type.Object({ query: Type.String(), maxResults: Type.Optional(Type.Number()), budget: Type.Optional(Type.Number()) }),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       requireCodeLookup();
       const { config, client } = getRuntime(ctx.cwd);
       const budget = Math.min(params.budget ?? config.tokenBudget.searchResultChars, config.tokenBudget.searchResultChars);
       const maxResults = Math.min(params.maxResults ?? config.tokenBudget.maxResults, config.tokenBudget.maxResults);
-      const result = await client.search({ query: params.query, maxResults, budget }, signal);
+      const result = await client.search({ query: params.query, maxResults });
       const truncated = truncateText(result.text, budget);
       return textResult(truncated.text, { raw: result.raw, truncated: truncated.truncated });
     },
@@ -89,11 +90,11 @@ export default function (pi: ExtensionAPI) {
     description: "Read an exact OpenWiki page/section/result by identifier, preserving OpenWiki content and metadata.",
     promptSnippet: "Expand a specific OpenWiki page/section/result by id.",
     parameters: Type.Object({ id: Type.String(), budget: Type.Optional(Type.Number()) }),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       requireCodeLookup();
       const { config, client } = getRuntime(ctx.cwd);
       const budget = Math.min(params.budget ?? config.tokenBudget.pageChars, config.tokenBudget.pageChars);
-      const result = await client.readPageOrSection({ id: params.id, budget }, signal);
+      const result = await client.readPageOrSection({ id: params.id });
       const truncated = truncateText(result.text, budget);
       return textResult(truncated.text, { raw: result.raw, truncated: truncated.truncated });
     },
@@ -107,15 +108,16 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       requireCodeLookup();
-      const { config, drift } = getRuntime(ctx.cwd);
+      const { config } = getRuntime(ctx.cwd);
+      const drift = computeDrift(ctx.cwd, config);
       return textResult(formatUpdateSuggestion(drift, config), { drift });
     },
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const { config, client, drift } = getRuntime(ctx.cwd);
+    const { config, client } = getRuntime(ctx.cwd);
     const active = pi.getActiveTools();
-    const allowed = config.enabled && !config.tools.explicitDisabled && (config.tools.explicitEnabled || (config.tools.autoEnableForCodeLookup && hasCodebaseLookup(active)));
+    const allowed = config.enabled && config.tools.autoEnableForCodeLookup && hasCodebaseLookup(active);
     pi.setActiveTools(nextActiveTools(active, allowed));
     if (!allowed || !ctx.hasUI) return;
     const detected = await client.detectOpenWiki(ctx.signal).catch((error) => ({ available: false, error: error instanceof Error ? error.message : String(error) }));
@@ -123,6 +125,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`OpenWiki CLI unavailable: ${detected.error ?? "command not found"}. Run /openwiki doctor.`, "warning");
       return;
     }
+    const drift = computeDrift(ctx.cwd, config);
     if (shouldNudge(drift, config)) {
       ctx.ui.notify(drift.indexExists ? "OpenWiki index may be stale. Run /openwiki doctor or /openwiki update." : "OpenWiki index appears missing. Run /openwiki doctor or /openwiki update.", "info");
     }
@@ -138,14 +141,16 @@ export default function (pi: ExtensionAPI) {
     description: "OpenWiki commands: doctor, setup, init, update, install, enable, disable",
     handler: async (args, ctx) => {
       const [sub = "doctor"] = args.trim().split(/\s+/);
-      const { config, client, drift } = getRuntime(ctx.cwd);
+      const { config, client } = getRuntime(ctx.cwd);
       if (["doctor", "status"].includes(sub)) {
+        const drift = computeDrift(ctx.cwd, config);
         const detected = await client.detectOpenWiki(ctx.signal);
+        // Doctor reports drift even when nudges are switched off, because the user asked.
         const next = !detected.available
           ? "Install OpenWiki with `npm install -g openwiki`, or configure the command in project/global openwiki.json."
           : !drift.indexExists
             ? "Run /openwiki init to generate the initial wiki, or run `openwiki --init` in this repository."
-            : shouldNudge(drift, config)
+            : drift.staleBecause.length
               ? "Run /openwiki update if you want to refresh the existing wiki."
               : "OpenWiki is ready.";
         ctx.ui.notify(`OpenWiki doctor\nCLI: ${detected.available ? "available" : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? drift.indexPath : "missing"}\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nNext: ${next}`, "info");
@@ -158,7 +163,7 @@ export default function (pi: ExtensionAPI) {
           const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage. Continue?`);
           if (!ok) return;
         }
-        const result = sub === "init" ? await client.runInit({}, ctx.signal) : await client.runUpdate({}, ctx.signal);
+        const result = sub === "init" ? await client.runInit(ctx.signal) : await client.runUpdate(ctx.signal);
         ctx.ui.notify(result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`, "info");
         return;
       }
@@ -175,11 +180,11 @@ export default function (pi: ExtensionAPI) {
       }
       if (sub === "setup") {
         if (!ctx.hasUI) return;
-        const managedBy = await ctx.ui.select("How is OpenWiki kept fresh?", ["manual", "git-hooks", "ci-committed", "ci-remote", "ci-check-only", "unknown", "none"]);
-        const nudge = await ctx.ui.select("When should Pi mention drift?", ["off", "missing-only", "significant-drift", "any-drift"]);
+        const managedBy = await ctx.ui.select("How is OpenWiki kept fresh?", ["manual", "git-hooks", "ci", "unknown"]);
+        const nudge = await ctx.ui.confirm("Mention drift?", "Notify at session start when the OpenWiki index looks stale?");
         const path = projectConfigPath(ctx.cwd);
         mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, JSON.stringify({ enabled: true, freshness: { managedBy, nudge, autoUpdate: false } }, null, 2) + "\n");
+        writeFileSync(path, JSON.stringify({ enabled: true, freshness: { managedBy, nudge } }, null, 2) + "\n");
         ctx.ui.notify(`Saved OpenWiki setup to ${path}.`, "info");
         return;
       }

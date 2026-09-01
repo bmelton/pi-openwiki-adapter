@@ -1,59 +1,41 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import { wikiDir } from "./config.js";
 import type { ResolvedOpenWikiConfig } from "./types.js";
 
 export type OpenWikiResult = { text: string; raw?: unknown };
 
 export class OpenWikiClient {
-  constructor(private readonly config: ResolvedOpenWikiConfig) {}
+  private readonly wiki: string;
+
+  constructor(private readonly config: ResolvedOpenWikiConfig) {
+    this.wiki = wikiDir(config.openwiki.cwd);
+  }
 
   async detectOpenWiki(signal?: AbortSignal): Promise<{ available: boolean; version?: string; error?: string }> {
-    const baseArgs = this.config.openwiki.args ?? [];
     try {
-      const out = await exec(this.config.openwiki.command, [...baseArgs, "--help"], { cwd: this.config.openwiki.cwd, signal, timeout: 10_000 });
+      const out = await exec(this.config.openwiki.command, [...this.config.openwiki.args, "--help"], { cwd: this.config.openwiki.cwd, signal, timeout: 10_000 });
       return { available: true, version: parseVersion(out) };
-    } catch (helpError) {
-      try {
-        // Older/future OpenWiki builds may not support --help consistently, but a
-        // printable one-shot prompt is enough to prove the CLI is installed.
-        const out = await exec(this.config.openwiki.command, [...baseArgs, "--print", "ping"], { cwd: this.config.openwiki.cwd, signal, timeout: 10_000 });
-        return { available: true, version: parseVersion(out) };
-      } catch (probeError) {
-        const error = probeError instanceof Error ? probeError.message : String(probeError);
-        const helpMessage = helpError instanceof Error ? helpError.message : String(helpError);
-        return { available: false, error: error || helpMessage };
-      }
+    } catch (error) {
+      return { available: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  async getStatus(signal?: AbortSignal): Promise<OpenWikiResult> {
-    const detected = await this.detectOpenWiki(signal);
-    const wikiDir = this.wikiDir();
-    return {
-      text: [
-        `OpenWiki CLI: ${detected.available ? "available" : "unavailable"}${detected.version ? ` (${detected.version})` : ""}`,
-        detected.error ? `Error: ${detected.error}` : undefined,
-        `Wiki directory: ${existsSync(wikiDir) ? wikiDir : "missing"}`,
-      ].filter(Boolean).join("\n"),
-      raw: { detected, wikiDir },
-    };
-  }
-
-  async getOutline(input: { focus?: string; budget?: number }, _signal?: AbortSignal): Promise<OpenWikiResult> {
+  async getOutline(input: { focus?: string }): Promise<OpenWikiResult> {
     const files = this.markdownFiles(input.focus);
     const lines: string[] = [];
     for (const file of files) {
-      const rel = relative(this.wikiDir(), file);
+      const rel = relative(this.wiki, file);
       lines.push(`- ${rel}`);
       for (const heading of extractHeadings(readFileSync(file, "utf8"))) {
         lines.push(`  ${"  ".repeat(Math.max(0, heading.level - 1))}- ${heading.text} (${rel}#${slugify(heading.text)})`);
       }
     }
-    return { text: lines.join("\n") || "No OpenWiki markdown files found.", raw: { files: files.map((f) => relative(this.wikiDir(), f)) } };
+    return { text: lines.join("\n") || "No OpenWiki markdown files found.", raw: { files: files.map((f) => relative(this.wiki, f)) } };
   }
 
-  async search(input: { query: string; maxResults?: number; budget?: number }, _signal?: AbortSignal): Promise<OpenWikiResult> {
+  async search(input: { query: string; maxResults?: number }): Promise<OpenWikiResult> {
     const terms = input.query.toLowerCase().split(/\s+/).filter(Boolean);
     const results = this.markdownFiles().map((file) => {
       const text = readFileSync(file, "utf8");
@@ -63,38 +45,36 @@ export class OpenWikiClient {
       const snippet = idx >= 0 ? text.slice(Math.max(0, idx - 180), idx + 420).replace(/\s+/g, " ").trim() : extractHeadings(text).slice(0, 3).map((h) => h.text).join("; ");
       return { file, score, snippet };
     }).filter((r) => r.score > 0).sort((a, b) => b.score - a.score).slice(0, input.maxResults ?? this.config.tokenBudget.maxResults);
-    const wiki = this.wikiDir();
+    const wiki = this.wiki;
     return {
       text: results.map((r, i) => `${i + 1}. ${relative(wiki, r.file)} (score ${r.score})\n   id: ${relative(wiki, r.file)}\n   ${r.snippet}`).join("\n\n") || "No OpenWiki results found.",
       raw: { results: results.map((r) => ({ ...r, file: relative(wiki, r.file) })) },
     };
   }
 
-  async readPageOrSection(input: { id: string; budget?: number }, _signal?: AbortSignal): Promise<OpenWikiResult> {
+  async readPageOrSection(input: { id: string }): Promise<OpenWikiResult> {
     const [pathPart, slug] = input.id.split("#", 2);
-    const file = resolve(this.wikiDir(), pathPart);
-    if (!file.startsWith(this.wikiDir()) || !existsSync(file)) throw new Error(`OpenWiki page not found: ${input.id}`);
+    const file = resolve(this.wiki, pathPart);
+    if (!file.startsWith(this.wiki) || !existsSync(file)) throw new Error(`OpenWiki page not found: ${input.id}`);
     let text = readFileSync(file, "utf8");
     if (slug) text = sectionBySlug(text, slug) ?? text;
-    return { text: `Source: ${relative(this.wikiDir(), file)}${slug ? `#${slug}` : ""}\n\n${text}`, raw: { file: relative(this.wikiDir(), file), slug } };
+    return { text: `Source: ${relative(this.wiki, file)}${slug ? `#${slug}` : ""}\n\n${text}`, raw: { file: relative(this.wiki, file), slug } };
   }
 
-  async runUpdate(_input: { force?: boolean } = {}, signal?: AbortSignal): Promise<OpenWikiResult> {
-    const text = await runStreaming(this.config.openwiki.command, [...this.config.openwiki.args, "--update", "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs });
-    return { text: text || "OpenWiki update completed." };
+  async runUpdate(signal?: AbortSignal): Promise<OpenWikiResult> {
+    return { text: await this.run("--update", signal) || "OpenWiki update completed." };
   }
 
-  async runInit(_input: { force?: boolean } = {}, signal?: AbortSignal): Promise<OpenWikiResult> {
-    const text = await runStreaming(this.config.openwiki.command, [...this.config.openwiki.args, "--init", "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs });
-    return { text: text || "OpenWiki initialization completed." };
+  async runInit(signal?: AbortSignal): Promise<OpenWikiResult> {
+    return { text: await this.run("--init", signal) || "OpenWiki initialization completed." };
   }
 
-  private wikiDir(): string {
-    return join(this.config.openwiki.cwd, "openwiki");
+  private run(flag: string, signal?: AbortSignal): Promise<string> {
+    return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs });
   }
 
   private markdownFiles(focus?: string): string[] {
-    const root = this.wikiDir();
+    const root = this.wiki;
     if (!existsSync(root)) return [];
     const files: string[] = [];
     const visit = (dir: string) => {
@@ -113,13 +93,6 @@ export class OpenWikiClient {
   }
 }
 
-export function mcpResultToText(raw: unknown): string {
-  if (!raw || typeof raw !== "object") return raw == null ? "" : String(raw);
-  const content = (raw as { content?: unknown }).content;
-  if (Array.isArray(content)) return content.map((item) => item && typeof item === "object" && "text" in item ? String((item as { text: unknown }).text) : JSON.stringify(item)).join("\n");
-  return JSON.stringify(raw, null, 2);
-}
-
 function extractHeadings(text: string): Array<{ level: number; text: string }> {
   return text.split(/\r?\n/).map((line) => /^(#{1,6})\s+(.+?)\s*$/.exec(line)).filter(Boolean).map((m) => ({ level: m![1].length, text: m![2].replace(/#+$/, "").trim() }));
 }
@@ -129,8 +102,7 @@ function slugify(text: string): string {
 }
 
 function parseVersion(text: string): string | undefined {
-  return /OpenWiki\s+v?([0-9]+\.[0-9]+\.[0-9][^\s]*)/i.exec(text)?.[1]
-    ?? /\bv([0-9]+\.[0-9]+\.[0-9][^\s]*)\b/i.exec(text)?.[1];
+  return /(?:OpenWiki\s+|\bv)v?([0-9]+\.[0-9]+\.[0-9][^\s]*)/i.exec(text)?.[1];
 }
 
 function sectionBySlug(text: string, slug: string): string | undefined {
@@ -156,21 +128,9 @@ function count(text: string, needle: string): number {
 
 function exec(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number }): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd: opts.cwd, signal: opts.signal, timeout: opts.timeout }, (error, stdout, stderr) => {
-      if (error) reject(new Error(stderr || error.message)); else resolve(String(stdout || stderr));
+    // ponytail: buffered, not streamed. An update run prints a report, not a live log.
+    execFile(command, args, { cwd: opts.cwd, signal: opts.signal, timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) reject(new Error(String(stderr || error.message).trim())); else resolve(String(stdout || stderr).trim());
     });
-  });
-}
-
-function runStreaming(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number }): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`OpenWiki update timed out after ${opts.timeout}ms`)); }, opts.timeout);
-    opts.signal?.addEventListener("abort", () => child.kill("SIGTERM"), { once: true });
-    child.stdout.on("data", (d) => { out += String(d); });
-    child.stderr.on("data", (d) => { out += String(d); });
-    child.on("error", reject);
-    child.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve(out.trim()) : reject(new Error(out.trim() || `openwiki exited with ${code}`)); });
   });
 }
