@@ -1,0 +1,26 @@
+{
+  "name": "pi-openwiki",
+  "version": "0.1.0",
+  "description": "Pi package that exposes LangChain OpenWiki via MCP for token-efficient codebase navigation.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package", "openwiki", "langchain", "mcp", "codebase-navigation"],
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
