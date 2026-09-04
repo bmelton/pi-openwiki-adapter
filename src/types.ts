@@ -31,6 +31,24 @@ export type OpenWikiConfig = {
   tokenBudget?: Partial<ResolvedOpenWikiConfig["tokenBudget"]>;
 };
 
+/** Live state of an OpenWiki generation run, read from the `openwiki/.run.json` checkpoint. */
+export type RunProgress = {
+  runId: string;
+  mode: "init" | "update";
+  phase: "planning" | "generating";
+  startedAt?: string;
+  /** Planned page count. Zero while OpenWiki is still planning. */
+  total: number;
+  /** Pages that are complete or deliberately skipped. */
+  done: number;
+  /** Title of the first pending page. */
+  current?: string;
+  checkpointMtime: string;
+  /** The checkpoint was written recently enough to treat the run as active. */
+  live: boolean;
+  elapsedMs?: number;
+};
+
 export type DriftSummary = {
   indexExists: boolean;
   indexPath?: string;

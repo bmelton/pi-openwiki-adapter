@@ -1,17 +1,59 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolveConfig, truncateText, projectConfigPath } from "../src/config.js";
 import { hasCodebaseLookup, nextActiveTools, OPENWIKI_TOOL_NAMES } from "../src/capabilities.js";
 import { OpenWikiClient } from "../src/openwiki-client.js";
 import { computeDrift, formatUpdateSuggestion, shouldNudge } from "../src/freshness.js";
+import { formatDuration, formatRunProgress, formatRunStatusLine, readRunProgress } from "../src/run-progress.js";
+
+const STATUS_KEY = "openwiki";
+const POLL_INTERVAL_MS = 2_000;
 
 function textResult(text: string, details: Record<string, unknown> = {}) {
   return { content: [{ type: "text" as const, text }], details };
 }
 
 export default function (pi: ExtensionAPI) {
+  // One poller per extension instance, shared by the command path and the event path.
+  let poller: ReturnType<typeof setInterval> | undefined;
+
+  const stopPolling = (ctx: ExtensionContext) => {
+    if (poller) clearInterval(poller);
+    poller = undefined;
+    if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+  };
+
+  /** Drive the footer status line from the checkpoint until `stop` returns true and the checkpoint is gone. */
+  const startPolling = (ctx: ExtensionContext, startedAtMs: number, isCommandRun: boolean) => {
+    if (poller || !ctx.hasUI) return;
+    poller = setInterval(() => {
+      const progress = readRunProgress(ctx.cwd);
+      if (progress && (isCommandRun || progress.live)) {
+        ctx.ui.setStatus(STATUS_KEY, formatRunStatusLine(progress));
+      } else if (isCommandRun) {
+        // OpenWiki writes no checkpoint until the plan lands, so show elapsed time meanwhile.
+        ctx.ui.setStatus(STATUS_KEY, `openwiki: starting · ${formatDuration(Date.now() - startedAtMs)}`);
+      } else {
+        stopPolling(ctx);
+      }
+    }, POLL_INTERVAL_MS);
+  };
+
+  /** Reflect an externally started run in the footer. Cheap enough to call once per turn. */
+  const syncRunStatus = (ctx: ExtensionContext) => {
+    const progress = readRunProgress(ctx.cwd);
+    if (!ctx.hasUI) return progress;
+    if (progress?.live) {
+      ctx.ui.setStatus(STATUS_KEY, formatRunStatusLine(progress));
+      startPolling(ctx, Date.now(), false);
+    } else if (!progress && poller) {
+      stopPolling(ctx);
+    }
+    return progress;
+  };
+
   const requireCodeLookup = () => {
     const active = pi.getActiveTools();
     if (!hasCodebaseLookup(active)) {
@@ -34,6 +76,7 @@ export default function (pi: ExtensionAPI) {
       requireCodeLookup();
       const { config, paths, client } = getRuntime(ctx.cwd);
       const drift = computeDrift(ctx.cwd, config);
+      const progress = readRunProgress(ctx.cwd);
       const detected = await client.detectOpenWiki(signal);
       return textResult([
         `OpenWiki enabled: ${config.enabled}`,
@@ -46,7 +89,8 @@ export default function (pi: ExtensionAPI) {
         `Freshness: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}`,
         `Changed files: ${drift.changedFileCount}`,
         drift.staleBecause.length ? `Drift:\n${drift.staleBecause.map((x) => `- ${x}`).join("\n")}` : "Drift: no significant drift detected",
-      ].filter(Boolean).join("\n"), { detected, drift, configPath: paths.project });
+        progress ? formatRunProgress(progress) : "OpenWiki run: none in progress",
+      ].filter(Boolean).join("\n"), { detected, drift, progress, configPath: paths.project });
     },
   });
 
@@ -110,7 +154,12 @@ export default function (pi: ExtensionAPI) {
       requireCodeLookup();
       const { config } = getRuntime(ctx.cwd);
       const drift = computeDrift(ctx.cwd, config);
-      return textResult(formatUpdateSuggestion(drift, config), { drift });
+      const progress = readRunProgress(ctx.cwd);
+      const suggestion = formatUpdateSuggestion(drift, config);
+      const text = progress?.live
+        ? `${formatRunProgress(progress)}\nDo not start another OpenWiki run while this one works.\n\n${suggestion}`
+        : suggestion;
+      return textResult(text, { drift, progress });
     },
   });
 
@@ -129,6 +178,17 @@ export default function (pi: ExtensionAPI) {
     if (shouldNudge(drift, config)) {
       ctx.ui.notify(drift.indexExists ? "OpenWiki index may be stale. Run /openwiki doctor or /openwiki update." : "OpenWiki index appears missing. Run /openwiki doctor or /openwiki update.", "info");
     }
+    const progress = syncRunStatus(ctx);
+    if (progress?.live) ctx.ui.notify(formatRunProgress(progress), "info");
+  });
+
+  pi.on("turn_start", async (_event, ctx) => {
+    if (!hasCodebaseLookup(pi.getActiveTools())) return;
+    syncRunStatus(ctx);
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    stopPolling(ctx);
   });
 
   pi.on("before_agent_start", async (event) => {
@@ -144,27 +204,47 @@ export default function (pi: ExtensionAPI) {
       const { config, client } = getRuntime(ctx.cwd);
       if (["doctor", "status"].includes(sub)) {
         const drift = computeDrift(ctx.cwd, config);
+        const progress = readRunProgress(ctx.cwd);
         const detected = await client.detectOpenWiki(ctx.signal);
         // Doctor reports drift even when nudges are switched off, because the user asked.
         const next = !detected.available
           ? "Install OpenWiki with `npm install -g openwiki`, or configure the command in project/global openwiki.json."
-          : !drift.indexExists
-            ? "Run /openwiki init to generate the initial wiki, or run `openwiki --init` in this repository."
-            : drift.staleBecause.length
-              ? "Run /openwiki update if you want to refresh the existing wiki."
-              : "OpenWiki is ready.";
-        ctx.ui.notify(`OpenWiki doctor\nCLI: ${detected.available ? "available" : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? drift.indexPath : "missing"}\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nNext: ${next}`, "info");
+          : progress?.live
+            ? "An OpenWiki run is in progress. Wait for it to finish before starting another."
+            : !drift.indexExists
+              ? "Run /openwiki init to generate the initial wiki, or run `openwiki --init` in this repository."
+              : drift.staleBecause.length
+                ? "Run /openwiki update if you want to refresh the existing wiki."
+                : "OpenWiki is ready.";
+        ctx.ui.notify(`OpenWiki doctor\nCLI: ${detected.available ? "available" : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? drift.indexPath : "missing"}\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
         return;
       }
       if (sub === "init" || sub === "update") {
+        const action = sub === "init" ? "Initialize" : "Update";
+        const flag = sub === "init" ? "--init" : "--update";
+        const progress = readRunProgress(ctx.cwd);
+        // Two writers against one checkpoint corrupt the run, so a live run needs an explicit override.
+        if (progress?.live) {
+          if (!ctx.hasUI) {
+            ctx.ui.notify(`An OpenWiki ${progress.mode} run is already in progress (${formatRunStatusLine(progress)}). Not starting another.`, "warning");
+            return;
+          }
+          const override = await ctx.ui.confirm("OpenWiki run already in progress", `${formatRunProgress(progress)}\n\nStarting a second run can corrupt the shared checkpoint. Continue anyway?`);
+          if (!override) return;
+        }
         if (ctx.hasUI) {
-          const action = sub === "init" ? "Initialize" : "Update";
-          const flag = sub === "init" ? "--init" : "--update";
-          const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage. Continue?`);
+          const resumeNote = progress && !progress.live ? " A previous run was interrupted, so OpenWiki resumes from its checkpoint." : "";
+          const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote} Continue?`);
           if (!ok) return;
         }
-        const result = sub === "init" ? await client.runInit(ctx.signal) : await client.runUpdate(ctx.signal);
-        ctx.ui.notify(result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`, "info");
+        const startedAtMs = Date.now();
+        startPolling(ctx, startedAtMs, true);
+        try {
+          const result = sub === "init" ? await client.runInit(ctx.signal) : await client.runUpdate(ctx.signal);
+          ctx.ui.notify(`${result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`}\n\nRan for ${formatDuration(Date.now() - startedAtMs)}.`, "info");
+        } finally {
+          stopPolling(ctx);
+        }
         return;
       }
       if (sub === "install") {

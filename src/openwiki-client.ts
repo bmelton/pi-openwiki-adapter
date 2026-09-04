@@ -128,7 +128,9 @@ function count(text: string, needle: string): number {
 
 function exec(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number }): Promise<string> {
   return new Promise((resolve, reject) => {
-    // ponytail: buffered, not streamed. An update run prints a report, not a live log.
+    // ponytail: buffered, not streamed. `openwiki --print` collects its whole report in memory and
+    // writes it on exit, so streaming stdout yields nothing. Live progress comes from the
+    // openwiki/.run.json checkpoint instead (see run-progress.ts).
     execFile(command, args, { cwd: opts.cwd, signal: opts.signal, timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) reject(new Error(String(stderr || error.message).trim())); else resolve(String(stdout || stderr).trim());
     });

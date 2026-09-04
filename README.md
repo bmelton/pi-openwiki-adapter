@@ -48,6 +48,25 @@ Use `/openwiki <subcommand>`:
 - `install` - shows install guidance
 - `enable` / `disable` - toggles project config
 
+## Run progress
+
+An OpenWiki generation run can take many minutes and prints nothing until it
+exits. This package reads OpenWiki's own checkpoint at `openwiki/.run.json` to
+report progress:
+
+- The footer status bar shows a live line, for example
+  `openwiki: update · page 7/23 · 4m12s`.
+- `/openwiki doctor`, `openwiki_status`, and `openwiki_update_suggestion` report
+  the phase, the page counter, and the run age.
+- Runs started outside Pi are detected too, because the checkpoint is the same
+  file. The package checks it at session start and at the start of each turn.
+- `/openwiki update` and `/openwiki init` warn and ask for a second confirmation
+  when a run already looks live. Two writers against one checkpoint corrupt the
+  run.
+
+A run whose checkpoint has not changed for over five minutes reads as
+interrupted. OpenWiki resumes such a run from its checkpoint.
+
 ## Configuration
 
 Project config lives at `.pi/openwiki.json`.

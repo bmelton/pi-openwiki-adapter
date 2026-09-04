@@ -283,7 +283,7 @@ Checklist:
 - [ ] Explain that updating may burn tokens or API usage.
 - [ ] Ask for confirmation before running.
 - [ ] Invoke OpenWiki's own update command/API.
-- [ ] Stream progress where possible.
+- [x] Stream progress where possible. `--print` buffers stdout, so progress comes from the `openwiki/.run.json` checkpoint.
 - [ ] Show success/failure clearly.
 - [ ] Never run as an implicit side effect of another command.
 
@@ -514,7 +514,7 @@ Exit criteria:
 ### Phase 5 — Explicit Update / Install Helpers
 
 - [ ] Implement `/openwiki update` with confirmation.
-- [ ] Implement progress reporting.
+- [x] Implement progress reporting.
 - [ ] Implement `/openwiki install` if install process is reliable.
 - [ ] Otherwise provide platform-specific instructions only.
 
