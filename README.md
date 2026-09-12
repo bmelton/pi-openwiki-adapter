@@ -8,6 +8,8 @@ Tested against OpenWiki 0.5.1 (September 2026). It reads the OKF front matter, `
 
 ## Install OpenWiki
 
+This adapter needs **OpenWiki 0.5.0 or newer** (`npm i -g openwiki@latest`; `openwiki --version` to check). Older releases abort a whole update with `Could not restore /openwiki/…: Error: File … not found` whenever the worker for a *new* page exits without submitting; 0.5.x skips that page and carries on. `/openwiki doctor` and `openwiki_status` warn when the installed CLI is too old.
+
 OpenWiki needs Node 22 or newer.
 
 ```bash

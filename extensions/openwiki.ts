@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { resolveConfig, truncateText, projectConfigPath } from "../src/config.js";
 import { hasCodebaseLookup, nextActiveTools, OPENWIKI_TOOL_NAMES } from "../src/capabilities.js";
-import { OpenWikiClient, type SessionInfo } from "../src/openwiki-client.js";
+import { OpenWikiClient, versionWarning, type SessionInfo } from "../src/openwiki-client.js";
 import type { SessionAuth } from "../src/session-route.js";
 import { computeDrift, formatUpdateSuggestion, shouldNudge } from "../src/freshness.js";
 import { formatDuration, formatRunProgress, formatRunStatusLine, formatStartingLine, readRunProgress, type Paint } from "../src/run-progress.js";
@@ -107,7 +107,7 @@ export default function (pi: ExtensionAPI) {
         `OpenWiki enabled: ${config.enabled}`,
         `OpenWiki command: ${config.openwiki.command} ${config.openwiki.args.join(" ")}`.trim(),
         `OpenWiki runs via: ${OpenWikiClient.describeRoute(route)} [routing.mode=${config.routing.mode}]`,
-        `OpenWiki available: ${detected.available}${detected.version ? ` (v${detected.version}${detected.path ? `, ${detected.path}` : ""})` : ""}`,
+        `OpenWiki available: ${detected.available}${detected.version ? ` (v${detected.version}${detected.path ? `, ${detected.path}` : ""})` : ""}${versionWarning(detected.version) ? `\nWARNING: ${versionWarning(detected.version)}` : ""}`,
         detected.error ? `OpenWiki error: ${detected.error}` : undefined,
         `Project config: ${paths.project}`,
         `Global config: ${paths.global}`,
@@ -257,7 +257,7 @@ export default function (pi: ExtensionAPI) {
                 : "OpenWiki is ready.";
         const lu = drift.lastUpdate;
         const route = await client.resolveRoute(sessionInfo(ctx));
-        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${OpenWikiClient.describeRoute(route)}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
+        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${OpenWikiClient.describeRoute(route)}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}${versionWarning(detected.version) ? ` — ${versionWarning(detected.version)}` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
         return;
       }
       if (sub === "init" || sub === "update") {

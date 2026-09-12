@@ -31,3 +31,14 @@ describe("config shim", () => {
     expect(prepareConfigShim(ROUTE_OWNED_KEYS, mkdtempSync(join(tmpdir(), "ow-empty-")))).toBeUndefined();
   });
 });
+
+import { versionWarning } from "../src/openwiki-client.js";
+describe("versionWarning", () => {
+  it("flags OpenWiki older than 0.5.0 and nothing else", () => {
+    expect(versionWarning("0.4.3")).toMatch(/older than 0\.5\.0/);
+    expect(versionWarning("0.5.0")).toBeUndefined();
+    expect(versionWarning("0.5.1")).toBeUndefined();
+    expect(versionWarning("1.0.0")).toBeUndefined();
+    expect(versionWarning(undefined)).toBeUndefined();
+  });
+});

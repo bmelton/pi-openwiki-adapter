@@ -251,6 +251,17 @@ export function locateBinaryPackage(command: string, env: NodeJS.ProcessEnv = pr
   return undefined;
 }
 
+/** Oldest OpenWiki this adapter is known to work with; older releases abort an update when a new page's worker fails (openwiki#765). */
+export const MIN_OPENWIKI_VERSION = "0.5.0";
+
+/** Human warning when the detected CLI is older than MIN_OPENWIKI_VERSION, else undefined. */
+export function versionWarning(version: string | undefined, min: string = MIN_OPENWIKI_VERSION): string | undefined {
+  if (!version) return undefined;
+  const a = version.split(".").map((n) => parseInt(n, 10) || 0), b = min.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) { if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0) ? `OpenWiki ${version} is older than ${min}; updates abort with "Could not restore …" when a new page's worker fails. Upgrade: npm i -g openwiki@latest` : undefined; }
+  return undefined;
+}
+
 function parseVersion(text: string): string | undefined {
   return /(?:OpenWiki\s+|\bv)v?([0-9]+\.[0-9]+\.[0-9][^\s]*)/i.exec(text)?.[1];
 }
