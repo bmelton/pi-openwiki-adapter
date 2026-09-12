@@ -90,6 +90,9 @@ Each mode falls through to the next when it cannot apply — `session` → `bedr
 { "routing": { "mode": "session", "port": 20129, "model": "auto" } }
 ```
 
+Routed runs (`session` or `bedrouter`) are spawned with a throwaway `OPENWIKI_CONFIG_DIR`: a copy of your `~/.openwiki/.env` with `OPENWIKI_PROVIDER`, `OPENWIKI_MODEL_ID` and `OPENWIKI_REASONING_EFFORT` removed, plus symlinks to everything else in `~/.openwiki` (skills, connectors, wiki, telemetry ids). OpenWiki reads its `.env` for every key the environment does not define and offers no way to unset one, so a reasoning effort saved for one provider would otherwise fail every run routed to another (`OPENWIKI_REASONING_EFFORT is not supported for provider "openai-compatible" …`). Your real `.env` is never modified; `native` runs do not use the shim.
+
+
 `port` and `model` describe the bedrouter fallback (`auto` lets it pick the rung per request; a rung name such as `sonnet` pins it).
 
 ## Configuration

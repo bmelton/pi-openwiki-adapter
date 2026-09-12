@@ -5,6 +5,7 @@ import { delimiter } from "node:path";
 import { wikiDir } from "./config.js";
 import { metaLine, pageMeta, splitFrontMatter, type FrontMatter } from "./frontmatter.js";
 import { sessionRoute, type SessionAuth, type SessionModel } from "./session-route.js";
+import { prepareConfigShim } from "./config-shim.js";
 import type { ResolvedOpenWikiConfig } from "./types.js";
 
 export type OpenWikiResult = { text: string; raw?: unknown };
@@ -179,8 +180,17 @@ export class OpenWikiClient {
 
   private async run(flag: string, signal?: AbortSignal, session?: SessionInfo): Promise<string> {
     const route = await this.resolveRoute(session);
-    const env = route.via === "native" ? {} : route.env;
-    return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs, env }, (child) => this.track(child));
+    if (route.via === "native") {
+      return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs }, (child) => this.track(child));
+    }
+    // Routed: OpenWiki must not see provider/model/reasoning keys saved in ~/.openwiki/.env for some other provider.
+    const shim = prepareConfigShim();
+    const env = shim ? { ...route.env, OPENWIKI_CONFIG_DIR: shim.dir } : route.env;
+    try {
+      return await exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs, env }, (child) => this.track(child));
+    } finally {
+      shim?.cleanup();
+    }
   }
 
   private pages(focus?: string): Page[] {
