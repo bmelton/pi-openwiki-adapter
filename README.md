@@ -70,6 +70,12 @@ report progress:
 A run whose checkpoint has not changed for over five minutes reads as
 interrupted. OpenWiki resumes such a run from its checkpoint.
 
+Quitting Pi while `/openwiki update` or `/openwiki init` is running stops the
+run (and any `/openwiki visualize` server this session started); the next run
+resumes from the checkpoint. `/reload` and switching sessions do not stop it.
+Pi tears down its UI before extensions learn about a quit, so this cannot be a
+prompt.
+
 ## Configuration
 
 Project config lives at `.pi/openwiki.json`.

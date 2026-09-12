@@ -59,3 +59,19 @@ describe("OpenWikiClient", () => {
 function readArgs(path: string): string[] {
   return readFileSync(path, "utf8").trim().split(/\n/);
 }
+
+describe("child process lifecycle", () => {
+  it("tracks a running update and stops it on demand", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ow-client-"));
+    const cli = join(dir, "openwiki");
+    writeFileSync(cli, "#!/usr/bin/env bash\ntrap 'exit 143' TERM\nsleep 30 &\nwait\n");
+    chmodSync(cli, 0o755);
+    const client = new OpenWikiClient(config(cli, dir));
+    const run = client.runUpdate();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(client.children.size).toBe(1);
+    expect(client.stopChildren()).toBe(1);
+    await expect(run).rejects.toThrow();
+    expect(client.children.size).toBe(0);
+  });
+});

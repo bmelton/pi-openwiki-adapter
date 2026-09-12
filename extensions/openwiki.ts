@@ -63,9 +63,13 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // One client per cwd so children started by /openwiki update or visualize can be stopped on quit.
+  const clients = new Map<string, OpenWikiClient>();
   const getRuntime = (cwd: string) => {
     const { config, paths } = resolveConfig(cwd);
-    return { config, paths, client: new OpenWikiClient(config) };
+    let client = clients.get(cwd);
+    if (!client) { client = new OpenWikiClient(config); clients.set(cwd, client); }
+    return { config, paths, client };
   };
 
   pi.registerTool({
@@ -198,8 +202,13 @@ export default function (pi: ExtensionAPI) {
     syncRunStatus(ctx);
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (event, ctx) => {
     stopPolling(ctx);
+    // A real quit stops what this session started: an in-flight `openwiki --update/--init` (OpenWiki resumes it from
+    // its checkpoint next time) and any visualizer. /reload and session switches leave them alone. The TUI is already
+    // torn down here, so this is a policy, not a prompt.
+    if (event.reason !== "quit") return;
+    for (const client of clients.values()) client.stopChildren();
   });
 
   pi.on("before_agent_start", async (event) => {

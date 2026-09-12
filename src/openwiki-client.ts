@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { delimiter } from "node:path";
 import { wikiDir } from "./config.js";
 import { metaLine, pageMeta, splitFrontMatter, type FrontMatter } from "./frontmatter.js";
@@ -18,6 +18,8 @@ const isStructural = (rel: string) => isIndex(rel) || rel === "log.md" || rel ==
 
 export class OpenWikiClient {
   private readonly wiki: string;
+  /** Child processes this client started and has not seen exit: the generation run and any visualizer. */
+  readonly children = new Set<import("node:child_process").ChildProcess>();
 
   constructor(private readonly config: ResolvedOpenWikiConfig) {
     this.wiki = wikiDir(config.openwiki.cwd);
@@ -38,7 +40,24 @@ export class OpenWikiClient {
   visualize(extraArgs: string[] = []): number | undefined {
     const child = spawn(this.config.openwiki.command, [...this.config.openwiki.args, "visualize", ...extraArgs], { cwd: this.config.openwiki.cwd, detached: true, stdio: "ignore" });
     child.unref();
+    this.track(child);
     return child.pid;
+  }
+
+  /** Stop every child this client started (SIGTERM). Returns how many were signalled. */
+  stopChildren(): number {
+    let n = 0;
+    for (const child of this.children) {
+      // every child is spawned detached (its own process group): one signal reaches the CLI and its helpers
+      try { if (child.pid) { process.kill(-child.pid, "SIGTERM"); n++; } } catch { /* already gone */ }
+    }
+    this.children.clear();
+    return n;
+  }
+
+  private track(child: import("node:child_process").ChildProcess) {
+    this.children.add(child);
+    child.once("exit", () => this.children.delete(child));
   }
 
   /**
@@ -115,7 +134,7 @@ export class OpenWikiClient {
   }
 
   private run(flag: string, signal?: AbortSignal): Promise<string> {
-    return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs });
+    return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs }, (child) => this.track(child));
   }
 
   private pages(focus?: string): Page[] {
@@ -201,13 +220,37 @@ function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
-function exec(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number }): Promise<string> {
+function exec(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number }, onSpawn?: (child: import("node:child_process").ChildProcess) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     // ponytail: buffered, not streamed. `openwiki --print` collects its whole report in memory and
     // writes it on exit, so streaming stdout yields nothing. Live progress comes from the
     // openwiki/.run.json checkpoint instead (see run-progress.ts).
-    execFile(command, args, { cwd: opts.cwd, signal: opts.signal, timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(String(stderr || error.message).trim())); else resolve(String(stdout || stderr).trim());
+    // Own process group (detached) so a stop signals the run and anything it spawned; otherwise a helper
+    // process holding the stdout pipe keeps the promise pending after the CLI itself has exited.
+    let child: import("node:child_process").ChildProcess;
+    try {
+      child = spawn(command, args, { cwd: opts.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) { reject(error); return; }
+    const out: Buffer[] = [], err: Buffer[] = [];
+    let total = 0;
+    const MAX = 16 * 1024 * 1024;
+    const push = (buf: Buffer[]) => (chunk: Buffer) => { total += chunk.length; if (total <= MAX) buf.push(chunk); };
+    child.stdout?.on("data", push(out));
+    child.stderr?.on("data", push(err));
+    const killGroup = () => { try { if (child.pid) process.kill(-child.pid, "SIGTERM"); } catch { /* gone */ } };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, opts.timeout);
+    let timedOut = false;
+    const onAbort = () => killGroup();
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      const stdout = Buffer.concat(out).toString("utf8").trim();
+      const stderr = Buffer.concat(err).toString("utf8").trim();
+      if (code === 0) resolve(stdout || stderr);
+      else reject(new Error(stderr || (timedOut ? `openwiki timed out after ${opts.timeout} ms` : signal ? `openwiki stopped by ${signal}` : `openwiki exited with code ${code}`)));
     });
+    onSpawn?.(child);
   });
 }
