@@ -8,6 +8,7 @@ import { OpenWikiClient } from "../src/openwiki-client.js";
 import { computeDrift, formatUpdateSuggestion, shouldNudge } from "../src/freshness.js";
 import { formatDuration, formatRunProgress, formatRunStatusLine, readRunProgress } from "../src/run-progress.js";
 import { countClaims } from "../src/metadata.js";
+import { describeEvidenceBlockers, scanClaimsEvidence } from "../src/claims.js";
 
 const STATUS_KEY = "openwiki";
 const POLL_INTERVAL_MS = 2_000;
@@ -80,6 +81,8 @@ export default function (pi: ExtensionAPI) {
       const progress = readRunProgress(ctx.cwd);
       const detected = await client.detectOpenWiki(signal);
       const claims = countClaims(ctx.cwd);
+      const evidence = scanClaimsEvidence(ctx.cwd);
+      const blockers = describeEvidenceBlockers(evidence);
       const lu = drift.lastUpdate;
       return textResult([
         `OpenWiki enabled: ${config.enabled}`,
@@ -95,8 +98,10 @@ export default function (pi: ExtensionAPI) {
         `Changed files since last run: ${drift.changedFileCount} (${drift.uncommittedFileCount} uncommitted)`,
         drift.pagesBehind.length ? `Pages verified against an older head: ${drift.pagesBehind.length}` : undefined,
         drift.staleBecause.length ? `Drift:\n${drift.staleBecause.map((x) => `- ${x}`).join("\n")}` : "Drift: no significant drift detected",
+        evidence ? `Claim evidence: ${evidence.resources.length} cited files${evidence.missing.length ? `, ${evidence.missing.length} missing (pages will be reworked)` : ""}${evidence.symlinks.length ? `, ${evidence.symlinks.length} symlinked (BLOCKS runs)` : ""}` : undefined,
+        blockers,
         progress ? formatRunProgress(progress) : "OpenWiki run: none in progress",
-      ].filter(Boolean).join("\n"), { detected, drift, progress, claims, configPath: paths.project });
+      ].filter(Boolean).join("\n"), { detected, drift, progress, claims, evidence, configPath: paths.project });
     },
   });
 
@@ -213,12 +218,15 @@ export default function (pi: ExtensionAPI) {
         const progress = readRunProgress(ctx.cwd);
         const detected = await client.detectOpenWiki(ctx.signal);
         // Doctor reports drift even when nudges are switched off, because the user asked.
+        const blockers = describeEvidenceBlockers(scanClaimsEvidence(ctx.cwd));
         const next = !detected.available
           ? "Install OpenWiki with `npm install -g openwiki`, or configure the command in project/global openwiki.json."
           : progress?.live
             ? "An OpenWiki run is in progress. Wait for it to finish before starting another."
             : !drift.indexExists
               ? "Run /openwiki init to generate the initial wiki, or run `openwiki --init` in this repository."
+              : blockers
+                ? blockers
               : drift.staleBecause.length
                 ? "Run /openwiki update if you want to refresh the existing wiki."
                 : "OpenWiki is ready.";
@@ -244,11 +252,19 @@ export default function (pi: ExtensionAPI) {
           const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote} Continue?`);
           if (!ok) return;
         }
+        // OpenWiki's claims preflight aborts the whole run on symlinked evidence; say so now instead of after a failed spawn.
+        const blockers = sub === "update" ? describeEvidenceBlockers(scanClaimsEvidence(ctx.cwd)) : undefined;
+        if (blockers) { ctx.ui.notify(blockers, "error"); return; }
         const startedAtMs = Date.now();
         startPolling(ctx, startedAtMs, true);
         try {
           const result = sub === "init" ? await client.runInit(ctx.signal) : await client.runUpdate(ctx.signal);
           ctx.ui.notify(`${result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`}\n\nRan for ${formatDuration(Date.now() - startedAtMs)}.`, "info");
+        } catch (error) {
+          // Surface OpenWiki's own message as a notification rather than an extension crash; keep the elapsed time.
+          const message = error instanceof Error ? error.message : String(error);
+          const hint = /symbolic link/i.test(message) ? "\n\nA file cited as Claim evidence is a symlink; replace it with a regular file (see /openwiki doctor)." : /interrupted|checkpoint/i.test(message) ? "\n\nRerun to resume from the checkpoint." : "";
+          ctx.ui.notify(`OpenWiki ${sub} failed after ${formatDuration(Date.now() - startedAtMs)}:\n${message}${hint}`, "error");
         } finally {
           stopPolling(ctx);
         }

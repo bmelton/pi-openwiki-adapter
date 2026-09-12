@@ -99,3 +99,7 @@ Freshness nudges are advisory. The package never updates OpenWiki automatically.
 Since OpenWiki 0.5 every run ends by writing `openwiki/.last-update.json` (time, mode, model, git head, complete or interrupted) and a per-page `openwiki/.page-manifest.json` (the head each page was verified against). Drift is measured against that record: commits and changed source files since the recorded head (`git diff --name-only <head>..HEAD`, wiki paths excluded), uncommitted changes, "important" files (manifests, schemas, routes, configs), an interrupted last run, and pages whose baseline is older than the run's. A wiki without that record (generated before 0.5) falls back to comparing the `openwiki/` directory mtime with the latest commit.
 
 Set `freshness.nudge` to `false` to silence the session-start notice. `/openwiki doctor` still reports drift.
+
+## Claim evidence checks
+
+OpenWiki 0.5's Grounded Claims cite repository files as evidence (`repo://path#L1-L20`) and its pre-update check refuses a run outright when a cited file is a symbolic link. The adapter scans `openwiki/.claims/` before `/openwiki update`, and in `doctor` and `openwiki_status`, and reports the offending files with their targets and the pages that cite them, so the fix (make the path a regular file, for example a real `AGENTS.md` with `CLAUDE.md` containing `@AGENTS.md`) is known before any tokens are spent. Missing evidence files are reported too; OpenWiki handles those itself by reworking the affected pages.
