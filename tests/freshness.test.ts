@@ -73,6 +73,35 @@ describe("computeDrift with a last-update baseline", () => {
     expect(text).toMatch(/Pages: 2, 1 verified against an older head/);
   });
 
+  it("measures from the pages' verified head when OpenWiki held its baseline back after a finished run", () => {
+    // OpenWiki 0.5 finishRepositoryRun: skipped pages or a mid-run source change => status "interrupted" written with
+    // the *previous* run's head, while every page the run verified carries the current head in the manifest.
+    const { dir, wikiHead } = repo();
+    writeFileSync(join(dir, "b.ts"), "export const b = 2;\n");
+    git(dir, "add", "."); git(dir, "commit", "-qm", "two");
+    const head = git(dir, "rev-parse", "HEAD");
+    writeFileSync(join(dir, "openwiki", ".last-update.json"), JSON.stringify({ updatedAt: "x", command: "update", model: "auto-oss", gitHead: wikiHead, status: "interrupted" }));
+    writeFileSync(join(dir, "openwiki", ".page-manifest.json"), JSON.stringify({ schemaVersion: 1, pages: { "/openwiki/quickstart.md": { gitHead: head }, "/openwiki/core/a.md": { gitHead: head, completedBy: "openwiki/0.5.1" } } }));
+    const drift = computeDrift(dir, DEFAULT_CONFIG);
+    expect(drift.baseline).toBe("page-manifest");
+    expect(drift.heldBack).toEqual({ recordedHead: wikiHead, verifiedHead: head, pages: 2 });
+    expect(drift.commitsSince).toBe(0);
+    expect(drift.changedFiles).toEqual([]);
+    expect(drift.pagesBehind).toEqual([]);
+    expect(drift.staleBecause).toHaveLength(1);
+    expect(drift.staleBecause[0]).toMatch(/update \(by auto-oss\) finished, but OpenWiki kept its baseline at/);
+    expect(drift.staleBecause[0]).toMatch(/all 2 pages are verified at/);
+    expect(formatUpdateSuggestion(drift, DEFAULT_CONFIG)).toMatch(/Baseline: OpenWiki's run record says/);
+
+    // A page still at the old head means the run really did leave work behind: fall back to the recorded baseline.
+    writeFileSync(join(dir, "openwiki", ".page-manifest.json"), JSON.stringify({ schemaVersion: 1, pages: { "/openwiki/quickstart.md": { gitHead: head }, "/openwiki/core/a.md": { gitHead: wikiHead } } }));
+    const mixed = computeDrift(dir, DEFAULT_CONFIG);
+    expect(mixed.heldBack).toBeUndefined();
+    expect(mixed.baseline).toBe("last-update");
+    expect(mixed.commitsSince).toBe(2);
+    expect(mixed.staleBecause.join("\n")).toMatch(/interrupted; rerunning resumes/);
+  });
+
   it("falls back to the mtime heuristic for pre-0.5 wikis and reports a missing index", () => {
     const { dir } = repo();
     execFileSync("rm", [join(dir, "openwiki", ".last-update.json")]);

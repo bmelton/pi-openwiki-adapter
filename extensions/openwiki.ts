@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { resolveConfig, truncateText, projectConfigPath } from "../src/config.js";
 import { hasCodebaseLookup, nextActiveTools, OPENWIKI_TOOL_NAMES } from "../src/capabilities.js";
-import { OpenWikiClient, versionWarning, type SessionInfo } from "../src/openwiki-client.js";
+import { describeRunWarnings, OpenWikiClient, versionWarning, type SessionInfo } from "../src/openwiki-client.js";
 import type { SessionAuth } from "../src/session-route.js";
 import { computeDrift, formatUpdateSuggestion, shouldNudge } from "../src/freshness.js";
 import { formatDuration, formatRunProgress, formatRunStatusLine, formatStartingLine, readRunProgress, type Paint } from "../src/run-progress.js";
@@ -13,6 +13,12 @@ import { describeEvidenceBlockers, scanClaimsEvidence } from "../src/claims.js";
 
 const STATUS_KEY = "openwiki";
 const POLL_INTERVAL_MS = 2_000;
+
+/** Is the run about to go to the very model that left the baseline held back? Compared on OpenWiki's model id. */
+function sameModelAsHeldBackRun(drift: import("../src/types.js").DriftSummary, route: import("../src/openwiki-client.js").Route): boolean {
+  const model = OpenWikiClient.routeModel(route);
+  return Boolean(drift.heldBack && model && drift.lastUpdate?.model === model);
+}
 
 function textResult(text: string, details: Record<string, unknown> = {}) {
   return { content: [{ type: "text" as const, text }], details };
@@ -114,6 +120,7 @@ export default function (pi: ExtensionAPI) {
         `Index: ${drift.indexExists ? `found at ${drift.indexPath}` : "missing"}${drift.pageCount ? ` (${drift.pageCount} pages${claims !== undefined ? `, ${claims} Claims records` : ""})` : ""}`,
         lu ? `Last run: ${lu.command} at ${lu.updatedAt} by ${lu.model}${lu.gitHead ? ` @ ${lu.gitHead.slice(0, 12)}` : ""}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : drift.indexExists ? "Last run: unknown (no .last-update.json; wiki predates OpenWiki 0.5)" : undefined,
         `Freshness: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}, baseline=${drift.baseline}`,
+        drift.heldBack ? `Baseline held back: OpenWiki's run record says ${drift.heldBack.recordedHead.slice(0, 12)} but all ${drift.heldBack.pages} pages are verified at ${drift.heldBack.verifiedHead.slice(0, 12)} (pages skipped or source changed mid-run); drift below is measured from the verified head` : undefined,
         drift.commitsSince !== undefined ? `Commits since last run: ${drift.commitsSince}` : undefined,
         `Changed files since last run: ${drift.changedFileCount} (${drift.uncommittedFileCount} uncommitted)`,
         drift.pagesBehind.length ? `Pages verified against an older head: ${drift.pagesBehind.length}` : undefined,
@@ -242,6 +249,7 @@ export default function (pi: ExtensionAPI) {
         const drift = computeDrift(ctx.cwd, config);
         const progress = readRunProgress(ctx.cwd);
         const detected = await client.detectOpenWiki(ctx.signal);
+        const route = await client.resolveRoute(sessionInfo(ctx));
         // Doctor reports drift even when nudges are switched off, because the user asked.
         const blockers = describeEvidenceBlockers(scanClaimsEvidence(ctx.cwd));
         const next = !detected.available
@@ -252,12 +260,13 @@ export default function (pi: ExtensionAPI) {
               ? "Run /openwiki init to generate the initial wiki, or run `openwiki --init` in this repository."
               : blockers
                 ? blockers
+              : drift.heldBack
+                ? `The last run (by ${drift.lastUpdate?.model}) finished without every page submitted, so OpenWiki kept its baseline at ${drift.heldBack.recordedHead.slice(0, 12)} and each update re-plans from scratch. Run /openwiki update on a model that reliably submits pages${sameModelAsHeldBackRun(drift, route) ? ` — the session is still on ${drift.lastUpdate?.model}, so switch first (e.g. /model)` : ""}.`
               : drift.staleBecause.length
                 ? "Run /openwiki update if you want to refresh the existing wiki."
                 : "OpenWiki is ready.";
         const lu = drift.lastUpdate;
-        const route = await client.resolveRoute(sessionInfo(ctx));
-        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${OpenWikiClient.describeRoute(route)}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}${versionWarning(detected.version) ? ` — ${versionWarning(detected.version)}` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
+        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${OpenWikiClient.describeRoute(route)}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}${versionWarning(detected.version) ? ` — ${versionWarning(detected.version)}` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed${drift.heldBack ? ` (from the pages' verified head ${drift.heldBack.verifiedHead.slice(0, 12)}; OpenWiki's own baseline is held back at ${drift.heldBack.recordedHead.slice(0, 12)})` : ""}\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
         return;
       }
       if (sub === "init" || sub === "update") {
@@ -278,7 +287,11 @@ export default function (pi: ExtensionAPI) {
         const routeNote = `Model calls: ${OpenWikiClient.describeRoute(route)}.`;
         if (ctx.hasUI) {
           const resumeNote = progress && !progress.live ? " A previous run was interrupted, so OpenWiki resumes from its checkpoint." : "";
-          const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote}\n\n${routeNote} Continue?`);
+          const drift = sub === "update" ? computeDrift(ctx.cwd, config) : undefined;
+          const heldBackNote = drift?.heldBack
+            ? `\n\nWARNING: the last run (by ${drift.lastUpdate?.model}) left pages unsubmitted, so OpenWiki's baseline is held back at ${drift.heldBack.recordedHead.slice(0, 12)} and this run re-plans from scratch.${sameModelAsHeldBackRun(drift, route) ? " This run would use the same model; it is likely to fail the same way and cost the same again. Consider /model first." : ""}`
+            : "";
+          const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote}${heldBackNote}\n\n${routeNote} Continue?`);
           if (!ok) return;
         }
         // OpenWiki's claims preflight aborts the whole run on symlinked evidence; say so now instead of after a failed spawn.
@@ -288,7 +301,10 @@ export default function (pi: ExtensionAPI) {
         startPolling(ctx, startedAtMs, true);
         try {
           const result = sub === "init" ? await client.runInit(ctx.signal, session) : await client.runUpdate(ctx.signal, session);
-          ctx.ui.notify(`${result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`}\n\nRan for ${formatDuration(Date.now() - startedAtMs)}.`, "info");
+          const warning = describeRunWarnings(result.warnings);
+          // OpenWiki exits 0 in these cases and buries the reason in the run log, so lead with it, separately.
+          if (warning) ctx.ui.notify(`${warning}\n\nRan for ${formatDuration(Date.now() - startedAtMs)}.`, "warning");
+          ctx.ui.notify(`${result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`}\n\nRan for ${formatDuration(Date.now() - startedAtMs)}.`, warning ? "warning" : "info");
         } catch (error) {
           // Surface OpenWiki's own message as a notification rather than an extension crash; keep the elapsed time.
           const message = error instanceof Error ? error.message : String(error);

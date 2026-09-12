@@ -8,7 +8,30 @@ import { sessionRoute, type SessionAuth, type SessionModel } from "./session-rou
 import { prepareConfigShim } from "./config-shim.js";
 import type { ResolvedOpenWikiConfig } from "./types.js";
 
-export type OpenWikiResult = { text: string; raw?: unknown };
+export type OpenWikiResult = { text: string; raw?: unknown; warnings?: RunWarnings };
+
+/** Ways an OpenWiki 0.5 run can exit 0 yet leave its baseline held back (see freshness.ts heldBack). */
+export type RunWarnings = { skippedPages: string[]; sourceChanged: boolean };
+
+/**
+ * Pull the two conditions OpenWiki only reports as lines buried in `--print` output: a page worker that exited without
+ * submitting (page restored, skipped, run recorded as interrupted at the old head) and source changing mid-run.
+ */
+export function parseRunWarnings(output: string): RunWarnings | undefined {
+  const skippedPages: string[] = [];
+  for (const m of output.matchAll(/^(\S+) was restored after its worker exited without submitting\./gmu)) skippedPages.push(m[1]);
+  const sourceChanged = /Repository source changed while OpenWiki was running/u.test(output);
+  return skippedPages.length || sourceChanged ? { skippedPages, sourceChanged } : undefined;
+}
+
+/** One paragraph for a notification, or undefined when the run raised no warning. */
+export function describeRunWarnings(w: RunWarnings | undefined): string | undefined {
+  if (!w) return undefined;
+  const parts: string[] = [];
+  if (w.skippedPages.length) parts.push(`${w.skippedPages.length} page${w.skippedPages.length === 1 ? "" : "s"} skipped because the worker exited without submitting: ${w.skippedPages.join(", ")}. This usually means the model did not call submit; rerun on a stronger model.`);
+  if (w.sourceChanged) parts.push("The repository source changed while OpenWiki was running, so the baseline was not advanced; rerun once the tree is quiet.");
+  return `OpenWiki finished but recorded the run as interrupted at the previous head. ${parts.join(" ")}`;
+}
 
 /** What the caller knows about the Pi session, for routing.mode "session". */
 export type SessionInfo = { model: SessionModel; auth: () => Promise<SessionAuth>; oauth: boolean };
@@ -171,11 +194,20 @@ export class OpenWikiClient {
   }
 
   async runUpdate(signal?: AbortSignal, session?: SessionInfo): Promise<OpenWikiResult> {
-    return { text: await this.run("--update", signal, session) || "OpenWiki update completed." };
+    const out = await this.run("--update", signal, session);
+    return { text: out || "OpenWiki update completed.", warnings: parseRunWarnings(out) };
   }
 
   async runInit(signal?: AbortSignal, session?: SessionInfo): Promise<OpenWikiResult> {
-    return { text: await this.run("--init", signal, session) || "OpenWiki initialization completed." };
+    const out = await this.run("--init", signal, session);
+    return { text: out || "OpenWiki initialization completed.", warnings: parseRunWarnings(out) };
+  }
+
+  /** The model id a route hands OpenWiki (what it records in .last-update.json), or undefined for native runs. */
+  static routeModel(r: Route): string | undefined {
+    if (r.via === "session") return r.env.OPENWIKI_MODEL_ID;
+    if (r.via === "bedrouter") return r.model;
+    return undefined;
   }
 
   private async run(flag: string, signal?: AbortSignal, session?: SessionInfo): Promise<string> {

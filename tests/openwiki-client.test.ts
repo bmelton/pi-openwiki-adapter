@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../src/config.js";
-import { OpenWikiClient } from "../src/openwiki-client.js";
+import { describeRunWarnings, OpenWikiClient, parseRunWarnings } from "../src/openwiki-client.js";
 import type { ResolvedOpenWikiConfig } from "../src/types.js";
 
 function config(command: string, cwd: string): ResolvedOpenWikiConfig {
@@ -102,5 +102,31 @@ describe("routing OpenWiki runs through bedrouter", () => {
       const down = new OpenWikiClient({ ...base, routing: { mode: "bedrouter", port: 1, model: "auto" } });
       expect(await down.resolveRoute()).toMatchObject({ via: "native", reason: expect.stringMatching(/nothing listening/) });
     } finally { server.close(); }
+  });
+});
+
+describe("run warnings", () => {
+  it("finds the skipped-page and source-changed lines OpenWiki buries in --print output", () => {
+    const out = [
+      "Planning 4 pages…",
+      "/openwiki/concepts/configuration.md was restored after its worker exited without submitting. It was skipped for this update and will be reconsidered on the next update.",
+      "generating /openwiki/workflows/startup.md",
+      "/openwiki/workflows/startup.md was restored after its worker exited without submitting. It was skipped for this update and will be reconsidered on the next update.",
+      "Repository source changed while OpenWiki was running. The wiki was finalized without advancing its source checkpoint; run openwiki --update to reconcile the changes.",
+    ].join("\n");
+    const w = parseRunWarnings(out);
+    expect(w).toEqual({ skippedPages: ["/openwiki/concepts/configuration.md", "/openwiki/workflows/startup.md"], sourceChanged: true });
+    const text = describeRunWarnings(w)!;
+    expect(text).toMatch(/recorded the run as interrupted at the previous head/);
+    expect(text).toMatch(/2 pages skipped .*configuration\.md, \/openwiki\/workflows\/startup\.md/);
+    expect(text).toMatch(/source changed while OpenWiki was running/);
+    expect(parseRunWarnings("Update complete.\n")).toBeUndefined();
+    expect(describeRunWarnings(undefined)).toBeUndefined();
+  });
+
+  it("names the model id a route hands OpenWiki", () => {
+    expect(OpenWikiClient.routeModel({ via: "session", env: { OPENWIKI_MODEL_ID: "auto-oss" }, label: "bedrouter/auto-oss", openwikiProvider: "openai-compatible", skipped: [] })).toBe("auto-oss");
+    expect(OpenWikiClient.routeModel({ via: "bedrouter", env: {}, baseUrl: "http://127.0.0.1:1", model: "auto", skipped: [] })).toBe("auto");
+    expect(OpenWikiClient.routeModel({ via: "native", reason: "", skipped: [] })).toBeUndefined();
   });
 });

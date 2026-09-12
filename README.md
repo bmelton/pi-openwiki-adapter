@@ -126,6 +126,8 @@ Freshness nudges are advisory. The package never updates OpenWiki automatically.
 
 Since OpenWiki 0.5 every run ends by writing `openwiki/.last-update.json` (time, mode, model, git head, complete or interrupted) and a per-page `openwiki/.page-manifest.json` (the head each page was verified against). Drift is measured against that record: commits and changed source files since the recorded head (`git diff --name-only <head>..HEAD`, wiki paths excluded), uncommitted changes, "important" files (manifests, schemas, routes, configs), an interrupted last run, and pages whose baseline is older than the run's. A wiki without that record (generated before 0.5) falls back to comparing the `openwiki/` directory mtime with the latest commit.
 
+OpenWiki 0.5 can finish a run, exit 0, and still record it as `interrupted` at the *previous* head: it does this when a page worker exited without calling submit (the page is restored and skipped) or when the repository source changed mid-run. The pages it did verify carry the real head in `.page-manifest.json`, so when every page agrees on one newer head the adapter measures drift from that head, reports the baseline as held back (with the model that ran) instead of a spurious "N commits since", and the update dialog warns before spending money on the same model again. After a run, the two lines OpenWiki prints for these cases are surfaced as a separate warning with the page names rather than left inside the run log. Until a run completes with every page submitted, OpenWiki disables its no-op fast path and re-plans on each update.
+
 Set `freshness.nudge` to `false` to silence the session-start notice. `/openwiki doctor` still reports drift.
 
 ## Claim evidence checks

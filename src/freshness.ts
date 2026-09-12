@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { wikiDir } from "./config.js";
-import { readLastUpdate, readPageManifest } from "./metadata.js";
+import { readLastUpdate, readPageManifest, type LastUpdate } from "./metadata.js";
 import type { DriftSummary, ResolvedOpenWikiConfig } from "./types.js";
 
 const IMPORTANT_PATTERNS = [
@@ -47,23 +47,35 @@ export function computeDrift(cwd: string, config: ResolvedOpenWikiConfig): Drift
   const indexMtimeMs = indexPath ? statSync(indexPath).mtimeMs : undefined;
   const staleBecause: string[] = [];
 
+  // OpenWiki 0.5 finishes a run but records it as "interrupted" at the *previous* head when a page worker exited
+  // without submitting or the source changed mid-run (finishRepositoryRun). The pages it did verify carry the real
+  // head in the manifest, so when every page agrees on one newer head, measure drift from there and say why the
+  // run record disagrees; the raw "N commits since <old head>" is not drift the user can act on.
+  const manifestEntries = manifest ? Object.entries(manifest.pages) : [];
+  const manifestHeads = new Set(manifestEntries.map(([, e]) => e.gitHead).filter((h): h is string => Boolean(h)));
+  const heldBack: DriftSummary["heldBack"] = lastUpdate?.status === "interrupted" && lastUpdate.gitHead && manifestEntries.length > 0 && manifestHeads.size === 1 && !manifestHeads.has(lastUpdate.gitHead)
+    ? { recordedHead: lastUpdate.gitHead, verifiedHead: [...manifestHeads][0], pages: manifestEntries.length }
+    : undefined;
+  const baseHead = heldBack?.verifiedHead ?? lastUpdate?.gitHead;
+
   // Changes since the last run: committed (from the recorded head) plus uncommitted.
   let commitsSince: number | undefined;
   let committedSince: string[] = [];
   let baseline: DriftSummary["baseline"] = "none";
   if (!indexPath) {
     staleBecause.push("No local OpenWiki index was found at openwiki/.");
-  } else if (lastUpdate?.gitHead && latestCommit) {
-    baseline = "last-update";
-    if (lastUpdate.gitHead === latestCommit) commitsSince = 0;
+  } else if (lastUpdate && baseHead && latestCommit) {
+    baseline = heldBack ? "page-manifest" : "last-update";
+    if (baseHead === latestCommit) commitsSince = 0;
     else {
-      const count = git(cwd, ["rev-list", "--count", `${lastUpdate.gitHead}..HEAD`]);
+      const count = git(cwd, ["rev-list", "--count", `${baseHead}..HEAD`]);
       commitsSince = count !== undefined ? Number(count) : undefined;
-      committedSince = lines(git(cwd, ["diff", "--name-only", `${lastUpdate.gitHead}..HEAD`])).filter((f) => !isWikiPath(f));
-      if (commitsSince === undefined) staleBecause.push(`The last OpenWiki run's git head (${lastUpdate.gitHead.slice(0, 12)}) is not in this repository's history; the wiki may come from another branch.`);
+      committedSince = lines(git(cwd, ["diff", "--name-only", `${baseHead}..HEAD`])).filter((f) => !isWikiPath(f));
+      if (commitsSince === undefined) staleBecause.push(`The last OpenWiki run's git head (${baseHead.slice(0, 12)}) is not in this repository's history; the wiki may come from another branch.`);
       else if (commitsSince > 0) staleBecause.push(`${commitsSince} commit${commitsSince === 1 ? "" : "s"} since the last OpenWiki ${lastUpdate.command} (${committedSince.length} file${committedSince.length === 1 ? "" : "s"} changed).`);
     }
-    if (lastUpdate.status === "interrupted") staleBecause.push("The last OpenWiki run was interrupted; rerunning resumes it from its checkpoint.");
+    if (heldBack) staleBecause.push(formatHeldBack(heldBack, lastUpdate));
+    else if (lastUpdate.status === "interrupted") staleBecause.push("The last OpenWiki run was interrupted; rerunning resumes it from its checkpoint.");
   } else {
     baseline = "mtime";
     if (indexMtimeMs && latestCommitUnix && indexMtimeMs < Number(latestCommitUnix) * 1000) {
@@ -81,14 +93,14 @@ export function computeDrift(cwd: string, config: ResolvedOpenWikiConfig): Drift
   }
 
   // Pages verified against an older head than the last run: OpenWiki leaves untouched pages at their own baseline.
-  const manifestEntries = manifest ? Object.entries(manifest.pages) : [];
-  const pagesBehind = lastUpdate?.gitHead ? manifestEntries.filter(([, e]) => e.gitHead && e.gitHead !== lastUpdate.gitHead).map(([p]) => p) : [];
+  const pagesBehind = baseHead ? manifestEntries.filter(([, e]) => e.gitHead && e.gitHead !== baseHead).map(([p]) => p) : [];
 
   return {
     indexExists: Boolean(indexPath),
     indexPath,
     baseline,
     lastUpdate,
+    heldBack,
     commitsSince,
     changedFiles: changed,
     changedFileCount: changed.length,
@@ -101,6 +113,11 @@ export function computeDrift(cwd: string, config: ResolvedOpenWikiConfig): Drift
     indexMtime: indexMtimeMs ? new Date(indexMtimeMs).toISOString() : undefined,
     staleBecause,
   };
+}
+
+/** Why OpenWiki's run record still points at an old head although its pages were verified at a newer one. */
+export function formatHeldBack(h: NonNullable<DriftSummary["heldBack"]>, lastUpdate: LastUpdate): string {
+  return `The last OpenWiki ${lastUpdate.command} (by ${lastUpdate.model}) finished, but OpenWiki kept its baseline at ${h.recordedHead.slice(0, 12)} because a page worker exited without submitting or the source changed mid-run; all ${h.pages} pages are verified at ${h.verifiedHead.slice(0, 12)}. Until a run completes with every page submitted, each update re-plans from scratch. Rerun on a model that reliably submits pages.`;
 }
 
 export function shouldNudge(drift: DriftSummary, config: ResolvedOpenWikiConfig): boolean {
@@ -117,6 +134,7 @@ export function formatUpdateSuggestion(drift: DriftSummary, config: ResolvedOpen
     out.push(`Last run: ${lu.command} at ${lu.updatedAt} by ${lu.model}${lu.gitHead ? ` @ ${lu.gitHead.slice(0, 12)}` : ""}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}`);
   } else if (drift.indexMtime) out.push(`Index modified: ${drift.indexMtime} (no run metadata; pre-0.5 wiki)`);
   if (drift.latestCommitTime) out.push(`Latest git commit: ${drift.latestCommitTime}${drift.latestCommit ? ` @ ${drift.latestCommit.slice(0, 12)}` : ""}`);
+  if (drift.heldBack) out.push(`Baseline: OpenWiki's run record says ${drift.heldBack.recordedHead.slice(0, 12)} but every page is verified at ${drift.heldBack.verifiedHead.slice(0, 12)}; drift below is measured from the verified head`);
   if (drift.commitsSince !== undefined) out.push(`Commits since last run: ${drift.commitsSince}`);
   out.push(`Changed files since last run: ${drift.changedFileCount} (${drift.uncommittedFileCount} uncommitted)`);
   if (drift.pageCount) out.push(`Pages: ${drift.pageCount}${drift.pagesBehind.length ? `, ${drift.pagesBehind.length} verified against an older head` : ""}`);

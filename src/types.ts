@@ -71,8 +71,14 @@ export type DriftSummary = {
   indexExists: boolean;
   indexPath?: string;
   /** What the drift was measured against: OpenWiki's last-run record, the index mtime (pre-0.5 wikis), or nothing. */
-  baseline: "last-update" | "mtime" | "none";
+  baseline: "last-update" | "page-manifest" | "mtime" | "none";
   lastUpdate?: import("./metadata.js").LastUpdate;
+  /**
+   * OpenWiki finished the last run but recorded it as interrupted at the previous head (a page worker exited without
+   * submitting, or the source changed mid-run) while every manifest page is verified at one newer head. Drift is then
+   * measured from `verifiedHead`.
+   */
+  heldBack?: { recordedHead: string; verifiedHead: string; pages: number };
   /** Commits between the last run's head and HEAD; undefined when unknown. */
   commitsSince?: number;
   /** Files changed since the last run (committed + uncommitted), wiki files excluded. */
