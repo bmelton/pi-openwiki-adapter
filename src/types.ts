@@ -6,6 +6,17 @@ export type ResolvedOpenWikiConfig = {
     cwd: string;
     timeoutMs: number;
   };
+  /**
+   * Which model serves OpenWiki's own generation runs (`/openwiki init|update`).
+   * "bedrouter": route through a local bedrouter (Anthropic passthrough) when it answers on `port`; fall back to
+   * OpenWiki's native provider (~/.openwiki/.env) when it does not. "native": always OpenWiki's own provider.
+   */
+  routing: {
+    mode: "bedrouter" | "native";
+    port: number;
+    /** Model name sent to bedrouter; `auto` lets the router pick the rung per request. */
+    model: string;
+  };
   tools: {
     autoEnableForCodeLookup: boolean;
   };
@@ -26,6 +37,7 @@ export type ResolvedOpenWikiConfig = {
 export type OpenWikiConfig = {
   enabled?: boolean;
   openwiki?: Partial<ResolvedOpenWikiConfig["openwiki"]>;
+  routing?: Partial<ResolvedOpenWikiConfig["routing"]>;
   tools?: Partial<ResolvedOpenWikiConfig["tools"]>;
   freshness?: Partial<ResolvedOpenWikiConfig["freshness"]>;
   tokenBudget?: Partial<ResolvedOpenWikiConfig["tokenBudget"]>;

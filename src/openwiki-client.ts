@@ -125,6 +125,26 @@ export class OpenWikiClient {
     return { text: `${head}\n\n${text.trim()}`, raw: { file: relative(this.wiki, file), slug, meta: pageMeta(fields) } };
   }
 
+  /**
+   * Decide where a generation run's model calls go. bedrouter mode probes the local server; if it answers, the child gets
+   * the four variables that redirect OpenWiki's Anthropic provider at it (shell env wins over ~/.openwiki/.env).
+   */
+  async resolveRoute(): Promise<{ via: "bedrouter"; env: Record<string, string>; baseUrl: string; model: string } | { via: "native"; reason: string }> {
+    const { mode, port, model } = this.config.routing;
+    if (mode === "native") return { via: "native", reason: "routing.mode is native" };
+    const baseUrl = `http://127.0.0.1:${process.env.BEDROUTER_PORT ?? port}`;
+    try {
+      const r = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1500) });
+      if (!r.ok) return { via: "native", reason: `bedrouter at ${baseUrl} answered ${r.status}` };
+    } catch {
+      return { via: "native", reason: `no bedrouter at ${baseUrl}` };
+    }
+    return {
+      via: "bedrouter", baseUrl, model,
+      env: { OPENWIKI_PROVIDER: "anthropic", ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: process.env.BEDROUTER_API_KEY || "bedrouter", OPENWIKI_MODEL_ID: model },
+    };
+  }
+
   async runUpdate(signal?: AbortSignal): Promise<OpenWikiResult> {
     return { text: await this.run("--update", signal) || "OpenWiki update completed." };
   }
@@ -133,8 +153,10 @@ export class OpenWikiClient {
     return { text: await this.run("--init", signal) || "OpenWiki initialization completed." };
   }
 
-  private run(flag: string, signal?: AbortSignal): Promise<string> {
-    return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs }, (child) => this.track(child));
+  private async run(flag: string, signal?: AbortSignal): Promise<string> {
+    const route = await this.resolveRoute();
+    const env = route.via === "bedrouter" ? route.env : {};
+    return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs, env }, (child) => this.track(child));
   }
 
   private pages(focus?: string): Page[] {
@@ -220,7 +242,7 @@ function count(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
 
-function exec(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number }, onSpawn?: (child: import("node:child_process").ChildProcess) => void): Promise<string> {
+function exec(command: string, args: string[], opts: { cwd: string; signal?: AbortSignal; timeout: number; env?: Record<string, string> }, onSpawn?: (child: import("node:child_process").ChildProcess) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     // ponytail: buffered, not streamed. `openwiki --print` collects its whole report in memory and
     // writes it on exit, so streaming stdout yields nothing. Live progress comes from the
@@ -229,7 +251,7 @@ function exec(command: string, args: string[], opts: { cwd: string; signal?: Abo
     // process holding the stdout pipe keeps the promise pending after the CLI itself has exited.
     let child: import("node:child_process").ChildProcess;
     try {
-      child = spawn(command, args, { cwd: opts.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(command, args, { cwd: opts.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...(opts.env ?? {}) } });
     } catch (error) { reject(error); return; }
     const out: Buffer[] = [], err: Buffer[] = [];
     let total = 0;

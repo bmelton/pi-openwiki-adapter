@@ -12,6 +12,11 @@ export const DEFAULT_CONFIG: ResolvedOpenWikiConfig = {
     cwd: ".",
     timeoutMs: 30 * 60_000,
   },
+  routing: {
+    mode: "bedrouter",
+    port: 20129,
+    model: "auto",
+  },
   tools: {
     autoEnableForCodeLookup: true,
   },
@@ -53,6 +58,7 @@ export function resolveConfig(cwd: string): { config: ResolvedOpenWikiConfig; pa
     ...acc,
     ...override,
     openwiki: { ...acc.openwiki, ...override.openwiki },
+    routing: { ...acc.routing, ...override.routing },
     tools: { ...acc.tools, ...override.tools },
     freshness: { ...acc.freshness, ...override.freshness },
     tokenBudget: { ...acc.tokenBudget, ...override.tokenBudget },

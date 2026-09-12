@@ -85,12 +85,14 @@ export default function (pi: ExtensionAPI) {
       const progress = readRunProgress(ctx.cwd);
       const detected = await client.detectOpenWiki(signal);
       const claims = countClaims(ctx.cwd);
+      const route = await client.resolveRoute();
       const evidence = scanClaimsEvidence(ctx.cwd);
       const blockers = describeEvidenceBlockers(evidence);
       const lu = drift.lastUpdate;
       return textResult([
         `OpenWiki enabled: ${config.enabled}`,
         `OpenWiki command: ${config.openwiki.command} ${config.openwiki.args.join(" ")}`.trim(),
+        `OpenWiki runs via: ${route.via === "bedrouter" ? `bedrouter ${route.baseUrl}, model ${route.model} (routing.mode=${config.routing.mode})` : `OpenWiki's own provider from ~/.openwiki/.env (${route.reason})`}`,
         `OpenWiki available: ${detected.available}${detected.version ? ` (v${detected.version}${detected.path ? `, ${detected.path}` : ""})` : ""}`,
         detected.error ? `OpenWiki error: ${detected.error}` : undefined,
         `Project config: ${paths.project}`,
@@ -240,7 +242,8 @@ export default function (pi: ExtensionAPI) {
                 ? "Run /openwiki update if you want to refresh the existing wiki."
                 : "OpenWiki is ready.";
         const lu = drift.lastUpdate;
-        ctx.ui.notify(`OpenWiki doctor\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
+        const route = await client.resolveRoute();
+        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${route.via === "bedrouter" ? `bedrouter ${route.baseUrl} (model ${route.model})` : `OpenWiki's own provider (${route.reason})`}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
         return;
       }
       if (sub === "init" || sub === "update") {
@@ -256,9 +259,13 @@ export default function (pi: ExtensionAPI) {
           const override = await ctx.ui.confirm("OpenWiki run already in progress", `${formatRunProgress(progress)}\n\nStarting a second run can corrupt the shared checkpoint. Continue anyway?`);
           if (!override) return;
         }
+        const route = await client.resolveRoute();
+        const routeNote = route.via === "bedrouter"
+          ? `Model calls go through bedrouter at ${route.baseUrl} (model ${route.model}); they will appear in its log and footer.`
+          : `Model calls use OpenWiki's own provider from ~/.openwiki/.env (${route.reason}).`;
         if (ctx.hasUI) {
           const resumeNote = progress && !progress.live ? " A previous run was interrupted, so OpenWiki resumes from its checkpoint." : "";
-          const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote} Continue?`);
+          const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote}\n\n${routeNote} Continue?`);
           if (!ok) return;
         }
         // OpenWiki's claims preflight aborts the whole run on symlinked evidence; say so now instead of after a failed spawn.

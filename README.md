@@ -76,6 +76,16 @@ resumes from the checkpoint. `/reload` and switching sessions do not stop it.
 Pi tears down its UI before extensions learn about a quit, so this cannot be a
 prompt.
 
+## Which model writes the wiki
+
+`/openwiki init` and `/openwiki update` run OpenWiki's **own** agent (`openwiki --init|--update --print`), which uses OpenWiki's own provider from `~/.openwiki/.env` (`OPENWIKI_PROVIDER`, `OPENWIKI_MODEL_ID`, that provider's key) — not Pi's model. By default this package redirects those runs through a local [bedrouter](https://github.com/bmelton/bedrouter) when one answers on `127.0.0.1:20129`: it spawns `openwiki` with `OPENWIKI_PROVIDER=anthropic`, `ANTHROPIC_BASE_URL=http://127.0.0.1:20129`, `ANTHROPIC_API_KEY=bedrouter` and `OPENWIKI_MODEL_ID=auto` (shell environment wins over `~/.openwiki/.env`, and OpenWiki's Anthropic provider honours the base URL), so every page goes through the router's Anthropic passthrough, shows in its debug trace and decision log, and is priced by its ladder. When no bedrouter is running, or `routing.mode` is `native`, the run uses OpenWiki's configured provider unchanged. The confirmation dialog, `/openwiki doctor` and `openwiki_status` all say which one will be used.
+
+```json
+{ "routing": { "mode": "bedrouter", "port": 20129, "model": "auto" } }
+```
+
+`model` is any alias bedrouter knows (`auto` lets it pick the rung per request; a rung name such as `sonnet` pins it). This only concerns the Anthropic ladder; the gpt-oss family is reachable through OpenWiki's `openai-compatible` provider pointed at `http://127.0.0.1:20129/v1` if you prefer, configured in `~/.openwiki/.env` by hand.
+
 ## Configuration
 
 Project config lives at `.pi/openwiki.json`.
@@ -88,6 +98,7 @@ Project config lives at `.pi/openwiki.json`.
     "cwd": ".",
     "timeoutMs": 1800000
   },
+  "routing": { "mode": "bedrouter", "port": 20129, "model": "auto" },
   "freshness": {
     "managedBy": "manual",
     "nudge": true,
