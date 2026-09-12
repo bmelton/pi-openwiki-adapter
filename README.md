@@ -2,8 +2,6 @@
 
 Pi package exposing generated OpenWiki documentation to Pi Coding Agent as token-efficient codebase navigation tools.
 
-** Note that this software should be considered alpha stage, and should not be used in production deployments **
-
 This package is intentionally a thin wrapper around the published `openwiki` CLI and generated `openwiki/` Markdown directory. It does not generate documentation unless the user explicitly runs `/openwiki update`.
 
 ## Install OpenWiki
