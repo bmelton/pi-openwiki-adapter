@@ -7,6 +7,7 @@ import { hasCodebaseLookup, nextActiveTools, OPENWIKI_TOOL_NAMES } from "../src/
 import { OpenWikiClient } from "../src/openwiki-client.js";
 import { computeDrift, formatUpdateSuggestion, shouldNudge } from "../src/freshness.js";
 import { formatDuration, formatRunProgress, formatRunStatusLine, readRunProgress } from "../src/run-progress.js";
+import { countClaims } from "../src/metadata.js";
 
 const STATUS_KEY = "openwiki";
 const POLL_INTERVAL_MS = 2_000;
@@ -78,19 +79,24 @@ export default function (pi: ExtensionAPI) {
       const drift = computeDrift(ctx.cwd, config);
       const progress = readRunProgress(ctx.cwd);
       const detected = await client.detectOpenWiki(signal);
+      const claims = countClaims(ctx.cwd);
+      const lu = drift.lastUpdate;
       return textResult([
         `OpenWiki enabled: ${config.enabled}`,
         `OpenWiki command: ${config.openwiki.command} ${config.openwiki.args.join(" ")}`.trim(),
-        `OpenWiki available: ${detected.available}${detected.version ? ` (${detected.version})` : ""}`,
+        `OpenWiki available: ${detected.available}${detected.version ? ` (v${detected.version}${detected.path ? `, ${detected.path}` : ""})` : ""}`,
         detected.error ? `OpenWiki error: ${detected.error}` : undefined,
         `Project config: ${paths.project}`,
         `Global config: ${paths.global}`,
-        `Index: ${drift.indexExists ? `found at ${drift.indexPath}` : "missing"}`,
-        `Freshness: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}`,
-        `Changed files: ${drift.changedFileCount}`,
+        `Index: ${drift.indexExists ? `found at ${drift.indexPath}` : "missing"}${drift.pageCount ? ` (${drift.pageCount} pages${claims !== undefined ? `, ${claims} Claims records` : ""})` : ""}`,
+        lu ? `Last run: ${lu.command} at ${lu.updatedAt} by ${lu.model}${lu.gitHead ? ` @ ${lu.gitHead.slice(0, 12)}` : ""}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : drift.indexExists ? "Last run: unknown (no .last-update.json; wiki predates OpenWiki 0.5)" : undefined,
+        `Freshness: managedBy=${config.freshness.managedBy}, nudge=${config.freshness.nudge}, baseline=${drift.baseline}`,
+        drift.commitsSince !== undefined ? `Commits since last run: ${drift.commitsSince}` : undefined,
+        `Changed files since last run: ${drift.changedFileCount} (${drift.uncommittedFileCount} uncommitted)`,
+        drift.pagesBehind.length ? `Pages verified against an older head: ${drift.pagesBehind.length}` : undefined,
         drift.staleBecause.length ? `Drift:\n${drift.staleBecause.map((x) => `- ${x}`).join("\n")}` : "Drift: no significant drift detected",
         progress ? formatRunProgress(progress) : "OpenWiki run: none in progress",
-      ].filter(Boolean).join("\n"), { detected, drift, progress, configPath: paths.project });
+      ].filter(Boolean).join("\n"), { detected, drift, progress, claims, configPath: paths.project });
     },
   });
 
@@ -198,7 +204,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("openwiki", {
-    description: "OpenWiki commands: doctor, setup, init, update, install, enable, disable",
+    description: "OpenWiki commands: doctor, setup, init, update, visualize, install, enable, disable",
     handler: async (args, ctx) => {
       const [sub = "doctor"] = args.trim().split(/\s+/);
       const { config, client } = getRuntime(ctx.cwd);
@@ -216,7 +222,8 @@ export default function (pi: ExtensionAPI) {
               : drift.staleBecause.length
                 ? "Run /openwiki update if you want to refresh the existing wiki."
                 : "OpenWiki is ready.";
-        ctx.ui.notify(`OpenWiki doctor\nCLI: ${detected.available ? "available" : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? drift.indexPath : "missing"}\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
+        const lu = drift.lastUpdate;
+        ctx.ui.notify(`OpenWiki doctor\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
         return;
       }
       if (sub === "init" || sub === "update") {
@@ -247,8 +254,15 @@ export default function (pi: ExtensionAPI) {
         }
         return;
       }
+      if (sub === "visualize") {
+        const detected = await client.detectOpenWiki(ctx.signal);
+        if (!detected.available) { ctx.ui.notify(`OpenWiki CLI unavailable: ${detected.error}`, "error"); return; }
+        const pid = client.visualize(args.trim().split(/\s+/).slice(1).filter(Boolean));
+        ctx.ui.notify(`Started \`openwiki visualize\` (pid ${pid ?? "?"}); it serves the wiki graph locally (default port 4321) and opens your browser.`, "info");
+        return;
+      }
       if (sub === "install") {
-        ctx.ui.notify("Install OpenWiki with `npm install -g openwiki`, then run `openwiki --init` in a repository. This Pi package reads the generated `openwiki/` docs and uses `openwiki --update --print` for explicit updates.", "info");
+        ctx.ui.notify("Install OpenWiki with `npm install -g openwiki` (needs Node 22+), then run `openwiki --init` in a repository. This Pi package reads the generated `openwiki/` docs and uses `openwiki --update --print` for explicit updates.", "info");
         return;
       }
       if (sub === "enable" || sub === "disable") {
@@ -268,7 +282,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`Saved OpenWiki setup to ${path}.`, "info");
         return;
       }
-      ctx.ui.notify("Unknown /openwiki command. Try: doctor, setup, init, update, install, enable, disable", "warning");
+      ctx.ui.notify("Unknown /openwiki command. Try: doctor, setup, init, update, visualize, install, enable, disable", "warning");
     },
   });
 }

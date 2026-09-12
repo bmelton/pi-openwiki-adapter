@@ -1,7 +1,7 @@
 {
   "name": "pi-openwiki-adapter",
-  "version": "0.3.2",
-  "description": "Pi package that exposes generated OpenWiki docs as token-efficient codebase navigation tools.",
+  "version": "0.4.0",
+  "description": "Pi package that exposes generated OpenWiki docs (OKF front matter, quickstart, indexes) as token-efficient codebase navigation tools, with freshness from OpenWiki's own run records.",
   "license": "MIT",
   "author": "bmelton",
   "homepage": "https://github.com/bmelton/pi-openwiki-adapter#readme",

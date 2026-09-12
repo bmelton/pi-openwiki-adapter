@@ -52,9 +52,19 @@ export type RunProgress = {
 export type DriftSummary = {
   indexExists: boolean;
   indexPath?: string;
+  /** What the drift was measured against: OpenWiki's last-run record, the index mtime (pre-0.5 wikis), or nothing. */
+  baseline: "last-update" | "mtime" | "none";
+  lastUpdate?: import("./metadata.js").LastUpdate;
+  /** Commits between the last run's head and HEAD; undefined when unknown. */
+  commitsSince?: number;
+  /** Files changed since the last run (committed + uncommitted), wiki files excluded. */
   changedFiles: string[];
   changedFileCount: number;
+  uncommittedFileCount: number;
   importantChangedFiles: string[];
+  pageCount?: number;
+  /** Manifest pages verified against a head older than the last run's. */
+  pagesBehind: string[];
   latestCommit?: string;
   latestCommitTime?: string;
   indexMtime?: string;
