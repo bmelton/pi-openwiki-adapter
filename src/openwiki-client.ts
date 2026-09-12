@@ -4,9 +4,18 @@ import { spawn } from "node:child_process";
 import { delimiter } from "node:path";
 import { wikiDir } from "./config.js";
 import { metaLine, pageMeta, splitFrontMatter, type FrontMatter } from "./frontmatter.js";
+import { sessionRoute, type SessionAuth, type SessionModel } from "./session-route.js";
 import type { ResolvedOpenWikiConfig } from "./types.js";
 
 export type OpenWikiResult = { text: string; raw?: unknown };
+
+/** What the caller knows about the Pi session, for routing.mode "session". */
+export type SessionInfo = { model: SessionModel; auth: () => Promise<SessionAuth>; oauth: boolean };
+
+export type Route =
+  | { via: "session"; env: Record<string, string>; label: string; openwikiProvider: string; skipped: string[] }
+  | { via: "bedrouter"; env: Record<string, string>; baseUrl: string; model: string; skipped: string[] }
+  | { via: "native"; reason: string; skipped: string[] };
 
 /** A wiki page with its OKF front matter split off. */
 type Page = { file: string; rel: string; fields?: FrontMatter; body: string; meta: ReturnType<typeof pageMeta> };
@@ -129,33 +138,48 @@ export class OpenWikiClient {
    * Decide where a generation run's model calls go. bedrouter mode probes the local server; if it answers, the child gets
    * the four variables that redirect OpenWiki's Anthropic provider at it (shell env wins over ~/.openwiki/.env).
    */
-  async resolveRoute(): Promise<{ via: "bedrouter"; env: Record<string, string>; baseUrl: string; model: string } | { via: "native"; reason: string }> {
+  async resolveRoute(session?: SessionInfo): Promise<Route> {
     const { mode, port, model } = this.config.routing;
-    if (mode === "native") return { via: "native", reason: "routing.mode is native" };
+    const skipped: string[] = [];
+    if (mode === "native") return { via: "native", reason: "routing.mode is native", skipped };
+    if (mode === "session") {
+      if (!session) skipped.push("session: no Pi model in this context");
+      else {
+        const r = sessionRoute(session.model, await session.auth(), session.oauth);
+        if (r.ok) return { via: "session", env: r.env, label: r.label, openwikiProvider: r.openwikiProvider, skipped };
+        skipped.push(`session: ${r.reason}`);
+      }
+    }
     const baseUrl = `http://127.0.0.1:${process.env.BEDROUTER_PORT ?? port}`;
     try {
       const r = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1500) });
-      if (!r.ok) return { via: "native", reason: `bedrouter at ${baseUrl} answered ${r.status}` };
+      if (!r.ok) skipped.push(`bedrouter: ${baseUrl} answered ${r.status}`);
+      else return { via: "bedrouter", baseUrl, model, skipped, env: { OPENWIKI_PROVIDER: "anthropic", ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: process.env.BEDROUTER_API_KEY || "bedrouter", OPENWIKI_MODEL_ID: model } };
     } catch {
-      return { via: "native", reason: `no bedrouter at ${baseUrl}` };
+      skipped.push(`bedrouter: nothing listening at ${baseUrl}`);
     }
-    return {
-      via: "bedrouter", baseUrl, model,
-      env: { OPENWIKI_PROVIDER: "anthropic", ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: process.env.BEDROUTER_API_KEY || "bedrouter", OPENWIKI_MODEL_ID: model },
-    };
+    return { via: "native", reason: skipped.join("; "), skipped };
   }
 
-  async runUpdate(signal?: AbortSignal): Promise<OpenWikiResult> {
-    return { text: await this.run("--update", signal) || "OpenWiki update completed." };
+  /** One line saying where a run's model calls will go, for dialogs and doctor. */
+  static describeRoute(r: Route): string {
+    const tail = r.skipped.length ? `  (skipped: ${r.skipped.join("; ")})` : "";
+    if (r.via === "session") return `the session's model ${r.label} via OpenWiki's ${r.openwikiProvider} provider${tail}`;
+    if (r.via === "bedrouter") return `bedrouter at ${r.baseUrl} (model ${r.model})${tail}`;
+    return `OpenWiki's own provider from ~/.openwiki/.env (${r.reason})`;
   }
 
-  async runInit(signal?: AbortSignal): Promise<OpenWikiResult> {
-    return { text: await this.run("--init", signal) || "OpenWiki initialization completed." };
+  async runUpdate(signal?: AbortSignal, session?: SessionInfo): Promise<OpenWikiResult> {
+    return { text: await this.run("--update", signal, session) || "OpenWiki update completed." };
   }
 
-  private async run(flag: string, signal?: AbortSignal): Promise<string> {
-    const route = await this.resolveRoute();
-    const env = route.via === "bedrouter" ? route.env : {};
+  async runInit(signal?: AbortSignal, session?: SessionInfo): Promise<OpenWikiResult> {
+    return { text: await this.run("--init", signal, session) || "OpenWiki initialization completed." };
+  }
+
+  private async run(flag: string, signal?: AbortSignal, session?: SessionInfo): Promise<string> {
+    const route = await this.resolveRoute(session);
+    const env = route.via === "native" ? {} : route.env;
     return exec(this.config.openwiki.command, [...this.config.openwiki.args, flag, "--print"], { cwd: this.config.openwiki.cwd, signal, timeout: this.config.openwiki.timeoutMs, env }, (child) => this.track(child));
   }
 

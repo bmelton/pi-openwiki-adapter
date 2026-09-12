@@ -100,7 +100,7 @@ describe("routing OpenWiki runs through bedrouter", () => {
       expect(readFileSync(envFile, "utf8")).toBe("");
 
       const down = new OpenWikiClient({ ...base, routing: { mode: "bedrouter", port: 1, model: "auto" } });
-      expect(await down.resolveRoute()).toMatchObject({ via: "native", reason: expect.stringMatching(/no bedrouter/) });
+      expect(await down.resolveRoute()).toMatchObject({ via: "native", reason: expect.stringMatching(/nothing listening/) });
     } finally { server.close(); }
   });
 });

@@ -90,7 +90,7 @@ describe("extension wiring", () => {
     const h = harness(dir);
 
     await h.handlers.get("turn_start")({ type: "turn_start" }, h.ctx);
-    expect(h.status.at(-1)).toEqual(["openwiki", "openwiki: update · page 2/3 · 4m12s"]);
+    expect(h.status.at(-1)).toEqual(["openwiki", "│ ◔ openwiki update · page 2/3 · 4m12s\u00a0\u00a0"]);
 
     rmSync(join(dir, "openwiki", ".run.json"));
     await vi.advanceTimersByTimeAsync(2_500);

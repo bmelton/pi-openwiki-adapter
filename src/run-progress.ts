@@ -44,10 +44,24 @@ export function readRunProgress(cwd: string, now = Date.now()): RunProgress | un
   };
 }
 
-/** Compact one-line form for the footer status bar. */
-export function formatRunStatusLine(progress: RunProgress): string {
+/**
+ * Compact one-line form for the footer status bar. Pi joins every extension's status with one space and collapses
+ * ASCII spaces, so the line starts with a dim segment bar and ends with non-breaking spaces (right margin) to stay
+ * visually separate from neighbours such as pi-bedrouter's. `paint` is ctx.ui.theme.fg when a UI is present.
+ */
+export type Paint = (color: "success" | "error" | "warning" | "dim" | "accent", text: string) => string;
+const plain: Paint = (_c, t) => t;
+const NBSP2 = "\u00a0\u00a0";
+export const segment = (body: string, paint: Paint = plain) => `${paint("dim", "│")} ${body}${NBSP2}`;
+
+export function formatRunStatusLine(progress: RunProgress, paint: Paint = plain): string {
   const stage = progress.phase === "planning" || progress.total === 0 ? progress.phase : `page ${progress.done + 1}/${progress.total}`;
-  return [`openwiki: ${progress.mode}`, stage, formatDuration(progress.elapsedMs)].filter(Boolean).join(" · ");
+  const glyph = progress.live ? paint("accent", "◔") : paint("warning", "◔");
+  return segment([`${glyph} openwiki ${progress.mode}`, stage, formatDuration(progress.elapsedMs)].filter(Boolean).join(" · "), paint);
+}
+
+export function formatStartingLine(elapsedMs: number, paint: Paint = plain): string {
+  return segment(`${paint("accent", "◔")} openwiki starting · ${formatDuration(elapsedMs)}`, paint);
 }
 
 /** Multi-line form for tool output and /openwiki doctor. */

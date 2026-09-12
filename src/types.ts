@@ -12,9 +12,15 @@ export type ResolvedOpenWikiConfig = {
    * OpenWiki's native provider (~/.openwiki/.env) when it does not. "native": always OpenWiki's own provider.
    */
   routing: {
-    mode: "bedrouter" | "native";
+    /**
+     * "session": use the model Pi is currently on (provider, base URL, key) when its credential is an API key; OAuth-backed
+     * sessions (Claude subscription, ChatGPT login) cannot be reused by OpenWiki and fall through.
+     * "bedrouter": a local bedrouter when it answers on `port`. "native": OpenWiki's own provider (~/.openwiki/.env).
+     * Fallback chain: session -> bedrouter -> native; each step reports why it was skipped.
+     */
+    mode: "session" | "bedrouter" | "native";
     port: number;
-    /** Model name sent to bedrouter; `auto` lets the router pick the rung per request. */
+    /** Model name sent to bedrouter in bedrouter mode; `auto` lets the router pick the rung per request. */
     model: string;
   };
   tools: {

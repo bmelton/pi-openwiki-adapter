@@ -29,7 +29,7 @@ describe("readRunProgress", () => {
     expect(progress.phase).toBe("planning");
     expect(progress.total).toBe(0);
     expect(progress.live).toBe(true);
-    expect(formatRunStatusLine(progress)).toBe("openwiki: update · planning · 0m48s");
+    expect(formatRunStatusLine(progress)).toBe("│ ◔ openwiki update · planning · 0m48s\u00a0\u00a0");
   });
 
   it("counts complete and skipped pages and names the first pending page", () => {
@@ -45,7 +45,7 @@ describe("readRunProgress", () => {
     const progress = readRunProgress(dir, NOW)!;
 
     expect(progress).toMatchObject({ done: 2, total: 4, current: "Architecture" });
-    expect(formatRunStatusLine(progress)).toBe("openwiki: update · page 3/4 · 4m12s");
+    expect(formatRunStatusLine(progress)).toBe("│ ◔ openwiki update · page 3/4 · 4m12s\u00a0\u00a0");
   });
 
   it("marks a checkpoint older than the live window as not live", () => {
@@ -94,6 +94,7 @@ describe("readRunProgress against an openwiki 0.5.1-shaped checkpoint", () => {
     const dir = repoWithCheckpoint(REAL_0_5_1_STATE, 30_000);
     const progress = readRunProgress(dir, NOW)!;
     expect(progress).toMatchObject({ runId: REAL_0_5_1_STATE.runId, mode: "update", phase: "generating", total: 3, done: 1, current: "OpenAI to Converse", live: true });
-    expect(formatRunStatusLine(progress)).toBe("openwiki: update · page 2/3 · 6m00s");
+    expect(formatRunStatusLine(progress)).toBe("│ ◔ openwiki update · page 2/3 · 6m00s\u00a0\u00a0");
+    expect(formatRunStatusLine(progress, (c, t) => `<${c}>${t}</${c}>`)).toBe("<dim>│</dim> <accent>◔</accent> openwiki update · page 2/3 · 6m00s\u00a0\u00a0");
   });
 });

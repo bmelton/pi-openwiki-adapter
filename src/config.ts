@@ -13,7 +13,7 @@ export const DEFAULT_CONFIG: ResolvedOpenWikiConfig = {
     timeoutMs: 30 * 60_000,
   },
   routing: {
-    mode: "bedrouter",
+    mode: "session",
     port: 20129,
     model: "auto",
   },

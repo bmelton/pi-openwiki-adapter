@@ -4,9 +4,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { resolveConfig, truncateText, projectConfigPath } from "../src/config.js";
 import { hasCodebaseLookup, nextActiveTools, OPENWIKI_TOOL_NAMES } from "../src/capabilities.js";
-import { OpenWikiClient } from "../src/openwiki-client.js";
+import { OpenWikiClient, type SessionInfo } from "../src/openwiki-client.js";
+import type { SessionAuth } from "../src/session-route.js";
 import { computeDrift, formatUpdateSuggestion, shouldNudge } from "../src/freshness.js";
-import { formatDuration, formatRunProgress, formatRunStatusLine, readRunProgress } from "../src/run-progress.js";
+import { formatDuration, formatRunProgress, formatRunStatusLine, formatStartingLine, readRunProgress, type Paint } from "../src/run-progress.js";
 import { countClaims } from "../src/metadata.js";
 import { describeEvidenceBlockers, scanClaimsEvidence } from "../src/claims.js";
 
@@ -21,6 +22,8 @@ export default function (pi: ExtensionAPI) {
   // One poller per extension instance, shared by the command path and the event path.
   let poller: ReturnType<typeof setInterval> | undefined;
 
+  const paint = (ctx: ExtensionContext): Paint => (ctx.hasUI && ctx.ui.theme ? (c, t) => ctx.ui.theme.fg(c, t) : (_c, t) => t);
+
   const stopPolling = (ctx: ExtensionContext) => {
     if (poller) clearInterval(poller);
     poller = undefined;
@@ -33,10 +36,10 @@ export default function (pi: ExtensionAPI) {
     poller = setInterval(() => {
       const progress = readRunProgress(ctx.cwd);
       if (progress && (isCommandRun || progress.live)) {
-        ctx.ui.setStatus(STATUS_KEY, formatRunStatusLine(progress));
+        ctx.ui.setStatus(STATUS_KEY, formatRunStatusLine(progress, paint(ctx)));
       } else if (isCommandRun) {
         // OpenWiki writes no checkpoint until the plan lands, so show elapsed time meanwhile.
-        ctx.ui.setStatus(STATUS_KEY, `openwiki: starting · ${formatDuration(Date.now() - startedAtMs)}`);
+        ctx.ui.setStatus(STATUS_KEY, formatStartingLine(Date.now() - startedAtMs, paint(ctx)));
       } else {
         stopPolling(ctx);
       }
@@ -48,7 +51,7 @@ export default function (pi: ExtensionAPI) {
     const progress = readRunProgress(ctx.cwd);
     if (!ctx.hasUI) return progress;
     if (progress?.live) {
-      ctx.ui.setStatus(STATUS_KEY, formatRunStatusLine(progress));
+      ctx.ui.setStatus(STATUS_KEY, formatRunStatusLine(progress, paint(ctx)));
       startPolling(ctx, Date.now(), false);
     } else if (!progress && poller) {
       stopPolling(ctx);
@@ -65,6 +68,17 @@ export default function (pi: ExtensionAPI) {
 
   // One client per cwd so children started by /openwiki update or visualize can be stopped on quit.
   const clients = new Map<string, OpenWikiClient>();
+  /** The Pi session as the client needs it: model + a lazy credential resolver + whether it is OAuth. */
+  const sessionInfo = (ctx: ExtensionContext): SessionInfo | undefined => {
+    const m = ctx.model;
+    if (!m) return undefined;
+    return {
+      model: { provider: m.provider, id: m.id, api: m.api, baseUrl: m.baseUrl },
+      oauth: (() => { try { return ctx.modelRegistry.isUsingOAuth(m); } catch { return false; } })(),
+      auth: async () => { try { return (await ctx.modelRegistry.getApiKeyAndHeaders(m)) as SessionAuth; } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; } },
+    };
+  };
+
   const getRuntime = (cwd: string) => {
     const { config, paths } = resolveConfig(cwd);
     let client = clients.get(cwd);
@@ -85,14 +99,14 @@ export default function (pi: ExtensionAPI) {
       const progress = readRunProgress(ctx.cwd);
       const detected = await client.detectOpenWiki(signal);
       const claims = countClaims(ctx.cwd);
-      const route = await client.resolveRoute();
+      const route = await client.resolveRoute(sessionInfo(ctx));
       const evidence = scanClaimsEvidence(ctx.cwd);
       const blockers = describeEvidenceBlockers(evidence);
       const lu = drift.lastUpdate;
       return textResult([
         `OpenWiki enabled: ${config.enabled}`,
         `OpenWiki command: ${config.openwiki.command} ${config.openwiki.args.join(" ")}`.trim(),
-        `OpenWiki runs via: ${route.via === "bedrouter" ? `bedrouter ${route.baseUrl}, model ${route.model} (routing.mode=${config.routing.mode})` : `OpenWiki's own provider from ~/.openwiki/.env (${route.reason})`}`,
+        `OpenWiki runs via: ${OpenWikiClient.describeRoute(route)} [routing.mode=${config.routing.mode}]`,
         `OpenWiki available: ${detected.available}${detected.version ? ` (v${detected.version}${detected.path ? `, ${detected.path}` : ""})` : ""}`,
         detected.error ? `OpenWiki error: ${detected.error}` : undefined,
         `Project config: ${paths.project}`,
@@ -242,8 +256,8 @@ export default function (pi: ExtensionAPI) {
                 ? "Run /openwiki update if you want to refresh the existing wiki."
                 : "OpenWiki is ready.";
         const lu = drift.lastUpdate;
-        const route = await client.resolveRoute();
-        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${route.via === "bedrouter" ? `bedrouter ${route.baseUrl} (model ${route.model})` : `OpenWiki's own provider (${route.reason})`}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
+        const route = await client.resolveRoute(sessionInfo(ctx));
+        ctx.ui.notify(`OpenWiki doctor\nRuns via: ${OpenWikiClient.describeRoute(route)}\nCLI: ${detected.available ? `available${detected.version ? ` (v${detected.version})` : ""}` : `unavailable (${detected.error})`}\nWiki: ${drift.indexExists ? `${drift.indexPath}${drift.pageCount ? ` · ${drift.pageCount} pages` : ""}` : "missing"}\nLast run: ${lu ? `${lu.command} ${lu.updatedAt.slice(0, 16)} by ${lu.model}${lu.status === "interrupted" ? " (INTERRUPTED)" : ""}` : "unknown"}\nSince then: ${drift.commitsSince !== undefined ? `${drift.commitsSince} commits, ` : ""}${drift.changedFileCount} files changed\nCapability gate: ${hasCodebaseLookup(pi.getActiveTools()) ? "allowed" : "blocked"}\nRun: ${progress ? formatRunStatusLine(progress) + (progress.live ? "" : " (stale checkpoint)") : "none in progress"}\nNext: ${next}`, "info");
         return;
       }
       if (sub === "init" || sub === "update") {
@@ -259,10 +273,9 @@ export default function (pi: ExtensionAPI) {
           const override = await ctx.ui.confirm("OpenWiki run already in progress", `${formatRunProgress(progress)}\n\nStarting a second run can corrupt the shared checkpoint. Continue anyway?`);
           if (!override) return;
         }
-        const route = await client.resolveRoute();
-        const routeNote = route.via === "bedrouter"
-          ? `Model calls go through bedrouter at ${route.baseUrl} (model ${route.model}); they will appear in its log and footer.`
-          : `Model calls use OpenWiki's own provider from ~/.openwiki/.env (${route.reason}).`;
+        const session = sessionInfo(ctx);
+        const route = await client.resolveRoute(session);
+        const routeNote = `Model calls: ${OpenWikiClient.describeRoute(route)}.`;
         if (ctx.hasUI) {
           const resumeNote = progress && !progress.live ? " A previous run was interrupted, so OpenWiki resumes from its checkpoint." : "";
           const ok = await ctx.ui.confirm(`${action} OpenWiki?`, `This runs \`openwiki ${flag} --print\` and may burn tokens/API usage.${resumeNote}\n\n${routeNote} Continue?`);
@@ -274,7 +287,7 @@ export default function (pi: ExtensionAPI) {
         const startedAtMs = Date.now();
         startPolling(ctx, startedAtMs, true);
         try {
-          const result = sub === "init" ? await client.runInit(ctx.signal) : await client.runUpdate(ctx.signal);
+          const result = sub === "init" ? await client.runInit(ctx.signal, session) : await client.runUpdate(ctx.signal, session);
           ctx.ui.notify(`${result.text || `OpenWiki ${sub === "init" ? "initialization" : "update"} completed.`}\n\nRan for ${formatDuration(Date.now() - startedAtMs)}.`, "info");
         } catch (error) {
           // Surface OpenWiki's own message as a notification rather than an extension crash; keep the elapsed time.
